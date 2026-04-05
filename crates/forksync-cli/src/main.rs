@@ -220,10 +220,17 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
         "1. Switch to `{}` to inspect the bootstrap and start your patch layer.",
         report.patch_branch
     );
-    println!("2. Add your custom fork changes there and commit them.");
-    println!("3. Run `forksync sync --trigger local-debug` to preview local sync behavior.");
     println!(
-        "4. If automatic push failed, push `{}`, `{}`, and `{}` to origin manually.",
+        "2. Treat `{}` as machine-managed output under the current model.",
+        report.output_branch
+    );
+    println!(
+        "3. Add your custom fork changes on `{}` and commit them there.",
+        report.patch_branch
+    );
+    println!("4. Run `forksync sync --trigger local-debug` to preview local sync behavior.");
+    println!(
+        "5. If automatic push failed, push `{}`, `{}`, and `{}` to origin manually.",
         report.patch_branch, report.live_branch, report.output_branch
     );
 

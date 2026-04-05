@@ -2,7 +2,32 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEST_DIR="${1:-$ROOT_DIR/sandbox/repos/demo}"
+
+usage() {
+  cat <<EOF
+Usage:
+  ./scripts/make_test_repos.sh
+  ./scripts/make_test_repos.sh <name>
+  ./scripts/make_test_repos.sh <absolute-or-relative-path>
+
+Behavior:
+  - no argument: recreates $ROOT_DIR/sandbox/repos/demo
+  - bare name: recreates $ROOT_DIR/sandbox/repos/<name>
+  - path: recreates the exact directory you pass
+EOF
+}
+
+if [[ "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+RAW_DEST="${1:-demo}"
+if [[ "$RAW_DEST" == /* || "$RAW_DEST" == .* ]]; then
+  DEST_DIR="$RAW_DEST"
+else
+  DEST_DIR="$ROOT_DIR/sandbox/repos/$RAW_DEST"
+fi
 
 UPSTREAM_WORKING="$DEST_DIR/upstream-working"
 UPSTREAM_REMOTE="$DEST_DIR/upstream-remote.git"
@@ -51,4 +76,11 @@ Suggested local dogfood flow:
  11. forksync sync --trigger local-debug --no-agent
  12. git show main:PATCH.txt
  13. git show main:UPSTREAM.txt
+
+Notes:
+  - You can omit the argument entirely to recreate the default demo at:
+      $ROOT_DIR/sandbox/repos/demo
+  - Under the current ForkSync model, make your own code changes on:
+      forksync/patches
+    The output branch (main by default) is machine-managed.
 EOF

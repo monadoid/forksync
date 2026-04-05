@@ -77,6 +77,12 @@ Primary branches:
 - `forksync/live`: the machine-generated continuously synced result
 - `main`: the default user-facing output branch
 
+Current authoring rule in the implemented v1 slice:
+
+- human-authored fork changes belong on `forksync/patches`
+- `main` is treated as machine-managed output and may be force-updated by sync
+- users inspect or ship from `main`, but they should not treat it as the durable source-of-truth branch for manual edits under the current design
+
 Update semantics:
 
 1. Always rebuild `forksync/live`.
@@ -254,6 +260,7 @@ The no-config experience should be:
 - let ForkSync create and try to push the bootstrap commit automatically
 - switch to `forksync/patches`
 - start making local changes
+- treat `main` as generated output, not the branch for manual authoring
 
 That is the UX bar to optimize for.
 
