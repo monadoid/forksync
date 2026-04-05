@@ -8,7 +8,8 @@ use thiserror::Error;
 pub struct PersistedState {
     pub last_processed_upstream_sha: Option<String>,
     pub last_good_sync_sha: Option<String>,
-    pub patch_base_sha: Option<String>,
+    #[serde(alias = "patch_base_sha")]
+    pub author_base_sha: Option<String>,
     pub history: Vec<RunRecord>,
 }
 
@@ -147,7 +148,7 @@ mod tests {
         let expected = PersistedState {
             last_processed_upstream_sha: Some("abc123".to_string()),
             last_good_sync_sha: Some("def456".to_string()),
-            patch_base_sha: Some("base789".to_string()),
+            author_base_sha: Some("base789".to_string()),
             history: vec![RunRecord {
                 recorded_at: "2026-04-05T09:00:00Z".to_string(),
                 outcome: RecordedOutcome::SyncedDeterministic,

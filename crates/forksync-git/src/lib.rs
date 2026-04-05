@@ -73,6 +73,7 @@ pub trait GitBackend: Send + Sync {
     fn paths_clean(&self, repo_path: &Path, paths: &[PathBuf]) -> Result<bool, GitError>;
     fn current_ref(&self, repo_path: &Path) -> Result<String, GitError>;
     fn checkout(&self, repo_path: &Path, reference: &str) -> Result<(), GitError>;
+    fn hard_reset(&self, repo_path: &Path, target: &str) -> Result<(), GitError>;
     fn head_sha(&self, repo_path: &Path) -> Result<String, GitError>;
     fn remote_exists(&self, repo_path: &Path, remote_name: &str) -> Result<bool, GitError>;
     fn get_remote_url(&self, repo_path: &Path, remote_name: &str) -> Result<String, GitError>;
@@ -238,6 +239,11 @@ impl GitBackend for SystemGitBackend {
 
     fn checkout(&self, repo_path: &Path, reference: &str) -> Result<(), GitError> {
         self.run_git(repo_path, ["checkout", "--quiet", reference])
+            .map(|_| ())
+    }
+
+    fn hard_reset(&self, repo_path: &Path, target: &str) -> Result<(), GitError> {
+        self.run_git(repo_path, ["reset", "--hard", target])
             .map(|_| ())
     }
 

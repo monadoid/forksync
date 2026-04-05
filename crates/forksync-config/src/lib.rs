@@ -476,7 +476,8 @@ pub struct StorageConfig {
     pub state_dir: String,
     pub persist_last_processed_upstream_sha: bool,
     pub persist_last_good_sync_sha: bool,
-    pub persist_patch_base_sha: bool,
+    #[serde(alias = "persist_patch_base_sha")]
+    pub persist_author_base_sha: bool,
     pub persist_run_history: bool,
     pub max_history_entries: u32,
 }
@@ -487,7 +488,7 @@ impl Default for StorageConfig {
             state_dir: ".forksync/state".to_string(),
             persist_last_processed_upstream_sha: true,
             persist_last_good_sync_sha: true,
-            persist_patch_base_sha: true,
+            persist_author_base_sha: true,
             persist_run_history: true,
             max_history_entries: 100,
         }

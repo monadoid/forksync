@@ -43,10 +43,10 @@ The v1 product posture is:
 
 - [x] v1 mode is action-only polling
 - [x] Future hosted evented mode remains an architectural seam
-- [x] Default branches are `forksync/patches`, `forksync/live`, and `main`
+- [x] Default branches are `main` for authoring/output, `forksync/live` for generated recovery, and `forksync/patches` as an internal snapshot/debug branch
 - [x] `forksync/live` is the authoritative generated branch
-- [x] `main` updates by default for simple UX
-- [x] Patch derivation is based on commits since recorded patch base
+- [x] `main` is the user authoring branch and also the default output branch
+- [x] User patch derivation is based on commits on `main` since the recorded generated author base
 - [x] Validation defaults to `none` when the user does not specify commands
 - [x] Reckless mode is the default posture
 - [x] Output branch force updates are allowed by default
@@ -73,25 +73,27 @@ The v1 product posture is:
 
 Primary branches:
 
-- `forksync/patches`: the user-maintained local customization layer
+- `main`: the user-maintained fork branch and default output branch
 - `forksync/live`: the machine-generated continuously synced result
-- `main`: the default user-facing output branch
+- `forksync/patches`: an internal snapshot/debug branch that preserves the pre-sync authored state when helpful
 
 Current authoring rule in the implemented v1 slice:
 
-- human-authored fork changes belong on `forksync/patches`
-- `main` is treated as machine-managed output and may be force-updated by sync
-- users inspect or ship from `main`, but they should not treat it as the durable source-of-truth branch for manual edits under the current design
+- human-authored fork changes belong on `main`
+- ForkSync derives the user patch layer from commits on `main` since the last generated author base
+- `forksync/live` is the machine-generated recovery/debug branch
+- `forksync/patches` is internal and should not be required knowledge for normal users
 
 Update semantics:
 
 1. Always rebuild `forksync/live`.
-2. Update `main` from `forksync/live` when `sync.update_output_branch = true`.
-3. Default to force-updating the output branch because the product is optimized for "keep me current" over "fail safely on local drift".
+2. Derive user commits from `main` since the recorded author base.
+3. Force-update `main` from the regenerated candidate when `sync.update_output_branch = true`.
+4. Default to force-updating the output branch because the product is optimized for "keep me current" over "fail safely on local drift".
 
 ## Sync Model
 
-Canonical strategy: patch replay from latest upstream HEAD.
+Canonical strategy: replay user commits from `main` onto latest upstream HEAD.
 
 Runtime flow:
 
@@ -99,15 +101,18 @@ Runtime flow:
 2. Acquire concurrency lock.
 3. Fetch fork and upstream remotes.
 4. Resolve latest upstream SHA.
-5. Exit early with `NoChange` if the SHA is already processed and the run is not forced.
-6. Create a fresh candidate branch from upstream HEAD.
-7. Derive active patch commits from `forksync/patches` since recorded patch base.
-8. Replay the patch stack in stable order.
-9. If replay conflicts, invoke the agent repair step.
-10. Run validation if configured.
-11. On success, update `forksync/live`, then the configured output branch.
-12. On failure, open or update one standing failure PR.
-13. Persist state and run history.
+5. Derive user commits from `main` since the recorded generated author base.
+6. Exit early with `NoChange` only if the upstream SHA is already processed and there are no new user commits on `main`.
+7. Snapshot the authored `main` state into the internal patch/debug branch when configured.
+8. Create a fresh candidate branch from upstream HEAD.
+9. Reapply ForkSync-managed files.
+10. Replay the user commit stack in stable order.
+11. If replay conflicts, invoke the agent repair step.
+12. Run validation if configured.
+13. On success, update `forksync/live`, then force-update `main`.
+14. Record the new generated author base.
+15. On failure, open or update one standing failure PR.
+16. Persist state and run history.
 
 ## Validation Model
 
@@ -143,7 +148,7 @@ Agent defaults:
 
 Agent responsibility:
 
-- repair patch replay conflicts
+- repair replay conflicts when user commits from `main` stop applying cleanly
 - optionally repair validation failures when enabled
 - never replace the deterministic engine as the primary sync path
 
@@ -175,7 +180,7 @@ Primary harness:
 
 - create upstream repos in temp directories
 - create fork repos in temp directories
-- create patch branches and commits
+- create commits on `main` and simulate upstream movement
 - simulate upstream movement
 - invoke the Rust library or CLI locally
 - assert branch tips, SHAs, state files, failure payload inputs, and sync outcomes
@@ -238,17 +243,18 @@ The primary user journey in v1 should be optimized for a fork-first, almost-no-c
    - detect the upstream parent repo
    - detect the upstream default branch
    - assume output branch `main`
-   - assume patch branch `forksync/patches`
    - assume live branch `forksync/live`
+   - assume internal patch/debug branch `forksync/patches`
    - assume validation mode `none`
    - assume GitHub workflow installation is desired
 6. ForkSync prepares `.forksync.yml` and `.github/workflows/forksync.yml` inside a bootstrap commit.
 7. ForkSync creates that bootstrap commit in a detached temporary worktree so the generated setup can be applied without hijacking the user's current checkout.
 9. ForkSync creates or updates the local branches needed for management:
-   - `forksync/patches`
+   - `main`
    - `forksync/live`
+   - `forksync/patches` for internal snapshot/debug use
 10. ForkSync attempts to push the bootstrap refs to `origin` automatically so the user does not have to remember to push the managed branches by hand.
-11. The user switches to `forksync/patches` whenever they are ready to inspect the bootstrap and start making local changes.
+11. If the current local `main` is clean, ForkSync makes it ready for immediate authoring; otherwise the user switches back to `main` whenever they are ready to start making local changes.
 12. From that point on, GitHub Actions keeps the fork current on schedule and via manual dispatch.
 
 ### No-config goal
@@ -258,9 +264,9 @@ The no-config experience should be:
 - clone fork
 - run `forksync init`
 - let ForkSync create and try to push the bootstrap commit automatically
-- switch to `forksync/patches`
-- start making local changes
-- treat `main` as generated output, not the branch for manual authoring
+- keep working on `main`
+- let ForkSync track the generated base in the background
+- inspect `forksync/live` only when debugging or recovering
 
 That is the UX bar to optimize for.
 
@@ -276,20 +282,21 @@ That is the UX bar to optimize for.
 - generate the GitHub workflow file
 - create the bootstrap commit inside a detached temporary worktree
 - create local management branches if missing
-- update only non-checked-out local refs from the bootstrap commit
+- make local `main` ready for immediate authoring when it is safe to do so
 - attempt to push the managed refs to `origin`
-- leave the user's current branch untouched
-- tell the user to switch to `forksync/patches` when they want to start customizing
+- otherwise leave the user's current branch untouched and explain how to return to `main`
+- tell the user to keep working on `main`
 - print the exact next steps for the user
 
 ### What the user should see after `forksync init`
 
 The user should be able to understand ForkSync from the created artifacts alone:
 
-- `.forksync.yml` explains what branches and policies are in play once they inspect a managed branch
-- `.github/workflows/forksync.yml` shows when sync runs once they inspect a managed branch
-- `forksync/patches` is where the user keeps their custom changes
+- `.forksync.yml` explains what branches and policies are in play on `main`
+- `.github/workflows/forksync.yml` shows when sync runs on `main`
+- `main` is where the user keeps their custom changes
 - `forksync/live` is the machine-generated result
+- `forksync/patches` exists only for internal snapshot/debug use
 - the configured output branch stays current automatically unless configured otherwise
 
 ### Local user experience before pushing
@@ -298,8 +305,8 @@ Before trusting GitHub Actions, a user should be able to test ForkSync locally:
 
 1. Clone their fork.
 2. Run `forksync init`.
-3. Switch to `forksync/patches` and inspect the already-created bootstrap commit.
-4. Make a custom change on `forksync/patches`.
+3. Inspect the bootstrap commit on `main`.
+4. Make a custom change on `main`.
 5. Simulate upstream movement locally or point to a real upstream remote.
 6. Run `forksync sync --trigger local-debug`.
 7. Inspect:
@@ -321,8 +328,8 @@ The first local user-visible milestone is:
 - open a forked repo locally
 - run `forksync init`
 - let ForkSync create the bootstrap commit and managed refs automatically
-- inspect `.forksync.yml` and `.github/workflows/forksync.yml` on the managed branches
-- see `forksync/patches`
+- inspect `.forksync.yml` and `.github/workflows/forksync.yml` on `main`
+- keep working on `main`
 - see `forksync/live`
 
 This milestone does not require full sync behavior yet. It proves the setup UX.
@@ -345,7 +352,7 @@ The next milestone is:
 
 - use a real fork clone in `sandbox/repos/`
 - run `forksync init`
-- create a real patch on `forksync/patches`
+- create a real patch on `main`
 - point at a real or simulated upstream
 - run local sync repeatedly
 - inspect the result as a user would
@@ -471,7 +478,7 @@ Definition of done for a feature:
   - [x] zero-config default path from a forked repo
   - [x] detached temp-worktree bootstrap flow
   - [x] automatic bootstrap commit creation
-  - [x] Branch creation for `forksync/patches`
+  - [x] Branch creation for internal `forksync/patches` snapshot/debug use
   - [x] Branch creation for `forksync/live`
   - [x] automatic push attempts for managed refs
   - [x] GitHub workflow file generation and installation
@@ -488,16 +495,16 @@ Definition of done for a feature:
   - [x] State directory layout
   - [x] Last processed upstream SHA
   - [x] Last good sync SHA
-  - [x] Patch base SHA
+  - [x] Author base SHA
   - [x] Run history persistence
 - [ ] TDD scope
   - [x] Unit tests for serialization
   - [ ] Unit tests for trimming and overwrite semantics
   - [x] Integration tests for state persistence across sync runs
 
-### PR 5: Patch Derivation
+### PR 5: Author Commit Derivation
 
-- [ ] Implement patch derivation from recorded patch base
+- [ ] Implement user-commit derivation from recorded author base
   - [ ] Commit range calculation
   - [ ] Stable ordering rules
   - [ ] Merge-base fallback behaviors where explicitly needed
@@ -512,7 +519,7 @@ Definition of done for a feature:
   - [x] Fetch
   - [x] Upstream SHA resolution
   - [x] candidate branch creation
-  - [x] patch replay
+  - [x] replay user commits from `main`
   - [x] success and failure outcomes
 - [x] Implement `SyncOutcome`
 - [ ] TDD scope
@@ -578,10 +585,10 @@ To reach the first local user-testable experience, implementation should proceed
 2. Implement only enough config and detection logic to generate `.forksync.yml`.
 3. Write failing tests for workflow file generation.
 4. Implement only enough workflow generation to emit `.github/workflows/forksync.yml`.
-5. Write failing tests for creating `forksync/patches` and `forksync/live`.
+5. Write failing tests for bootstrapping `main` and `forksync/live`.
 6. Implement only enough branch bootstrap logic to make those tests pass.
 7. Run the setup flow manually in a sandbox clone and document the observed UX gaps.
-8. Write failing tests for local patch replay sync using temp repos.
+8. Write failing tests for local main-authoring replay sync using temp repos.
 9. Implement deterministic sync behavior until local-debug sync works.
 10. Add `act` only after the local CLI flow is understandable end to end.
 
@@ -594,9 +601,8 @@ Once the setup and local sync paths exist, the first manual demo should look lik
 1. Fork a public GitHub repo.
 2. Clone the fork into `sandbox/repos/<name>`.
 3. Run `forksync init`.
-4. Switch to `forksync/patches`.
-5. Review the already-committed `.forksync.yml` and `.github/workflows/forksync.yml`.
-6. Create a change on `forksync/patches`.
+4. Review the already-committed `.forksync.yml` and `.github/workflows/forksync.yml` on `main`.
+5. Create a change on `main`.
 7. Simulate an upstream change.
 8. Run `forksync sync --trigger local-debug`.
 9. Inspect `forksync/live`, `main`, and `.forksync/state`.
@@ -654,8 +660,8 @@ Once the setup and local sync paths exist, the first manual demo should look lik
   - [x] upstream fetch
   - [x] dedupe by upstream SHA
   - [x] candidate branch creation
-  - [x] patch derivation from recorded patch base
-  - [x] patch replay
+  - [x] user-commit derivation from recorded author base
+  - [x] replay user commits from `main`
   - [ ] agent repair path
   - [ ] validation path
   - [x] live branch update

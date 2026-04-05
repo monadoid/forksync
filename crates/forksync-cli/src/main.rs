@@ -217,21 +217,21 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
     }
     println!("Next steps:");
     println!(
-        "1. Switch to `{}` to inspect the bootstrap and start your patch layer.",
-        report.patch_branch
-    );
-    println!(
-        "2. Treat `{}` as machine-managed output under the current model.",
+        "1. Work on `{}` like your normal fork branch.",
         report.output_branch
     );
     println!(
+        "2. Treat `{}` as the machine-generated recovery/debug branch.",
+        report.live_branch
+    );
+    println!(
         "3. Add your custom fork changes on `{}` and commit them there.",
-        report.patch_branch
+        report.output_branch
     );
     println!("4. Run `forksync sync --trigger local-debug` to preview local sync behavior.");
     println!(
-        "5. If automatic push failed, push `{}`, `{}`, and `{}` to origin manually.",
-        report.patch_branch, report.live_branch, report.output_branch
+        "5. If automatic push failed, push `{}` and `{}` to origin manually.",
+        report.live_branch, report.output_branch
     );
 
     Ok(())
@@ -239,6 +239,7 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
 
 fn run_sync(repo_path: &Path, config_path: &Path, args: SyncArgs) -> Result<()> {
     let config = load_from_path(config_path)?;
+    let workflow_path = repo_path.join(DEFAULT_WORKFLOW_PATH);
     let state_path = default_state_file_path(repo_path, &config);
     let engine = SyncEngine::new(
         SystemGitBackend,
@@ -249,6 +250,8 @@ fn run_sync(repo_path: &Path, config_path: &Path, args: SyncArgs) -> Result<()> 
 
     let report = engine.sync(&SyncRequest {
         repo_path: repo_path.to_path_buf(),
+        config_path: config_path.to_path_buf(),
+        workflow_path,
         config,
         trigger: args.trigger,
         dry_run: args.dry_run,
@@ -342,8 +345,8 @@ fn run_status(repo_path: &Path, config_path: &Path, args: StatusArgs) -> Result<
         state.last_good_sync_sha.as_deref().unwrap_or("<none>")
     );
     println!(
-        "Patch base SHA: {}",
-        state.patch_base_sha.as_deref().unwrap_or("<none>")
+        "Author base SHA: {}",
+        state.author_base_sha.as_deref().unwrap_or("<none>")
     );
     if args.history {
         println!("History entries: {}", state.history.len());

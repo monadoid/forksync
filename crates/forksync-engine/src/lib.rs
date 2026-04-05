@@ -47,6 +47,8 @@ pub struct InitReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncRequest {
     pub repo_path: PathBuf,
+    pub config_path: PathBuf,
+    pub workflow_path: PathBuf,
     pub config: RepoConfig,
     pub trigger: Option<TriggerSource>,
     pub dry_run: bool,
@@ -115,6 +117,7 @@ pub enum EngineError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BranchUpdateOutcome {
     ResetBackground,
+    ResetCheckedOut,
     SkippedCheckedOut,
 }
 
@@ -180,6 +183,7 @@ where
 
         let current_head = self.git.head_sha(&request.repo_path)?;
         let current_ref = self.git.current_ref(&request.repo_path)?;
+        let worktree_clean = self.git.worktree_clean(&request.repo_path)?;
         let output_branch = if self.git.remote_exists(&request.repo_path, "origin")? {
             self.git
                 .default_branch_for_remote(&request.repo_path, "origin")
@@ -198,8 +202,15 @@ where
         if output_branch != "main" {
             config.branches.output_mode = forksync_config::OutputMode::Custom;
         }
-        let bootstrap_commit_sha =
-            self.write_init_bootstrap_commit(request, &config, &current_head)?;
+        let bootstrap_commit_sha = self.write_managed_commit(
+            &request.repo_path,
+            &request.config_path,
+            &request.workflow_path,
+            request.install_workflow,
+            &config,
+            &current_head,
+            "Initialize ForkSync bootstrap",
+        )?;
         let workflow_path = request
             .install_workflow
             .then(|| request.workflow_path.clone());
@@ -214,6 +225,7 @@ where
                     &config.branches.patch,
                     &bootstrap_commit_sha,
                     &current_ref,
+                    worktree_clean,
                 )?,
             ));
             local_branch_updates.push((
@@ -223,6 +235,7 @@ where
                     &config.branches.live,
                     &bootstrap_commit_sha,
                     &current_ref,
+                    worktree_clean,
                 )?,
             ));
         }
@@ -233,13 +246,14 @@ where
                 &config.branches.output,
                 &bootstrap_commit_sha,
                 &current_ref,
+                worktree_clean,
             )?,
         ));
 
         let initial_state = PersistedState {
             last_processed_upstream_sha: None,
-            last_good_sync_sha: None,
-            patch_base_sha: Some(current_head),
+            last_good_sync_sha: Some(bootstrap_commit_sha.clone()),
+            author_base_sha: Some(bootstrap_commit_sha.clone()),
             history: Vec::new(),
         };
         self.state.save(&initial_state)?;
@@ -262,8 +276,12 @@ where
                     "Updated local branch {} in the background.",
                     branch
                 )),
+                BranchUpdateOutcome::ResetCheckedOut => notes.push(format!(
+                    "Updated your checked-out branch {} to the ForkSync bootstrap commit.",
+                    branch
+                )),
                 BranchUpdateOutcome::SkippedCheckedOut => notes.push(format!(
-                    "Left checked-out branch {} untouched locally; inspect the bootstrap by switching to a managed branch.",
+                    "Left checked-out branch {} untouched locally because it is not safe to rewrite in place. Switch to the managed output branch when you are ready to author there.",
                     branch
                 )),
             }
@@ -278,7 +296,7 @@ where
 
         if request.initial_sync {
             notes.push(
-                "Initial sync is still intentionally deferred; run `forksync sync --trigger local-debug` after you add your first patch commit."
+                "Initial sync is still intentionally deferred; run `forksync sync --trigger local-debug` after you add your first commit on the output branch."
                     .to_string(),
             );
         }
@@ -309,10 +327,17 @@ where
             ));
         }
 
-        notes.push(format!(
-            "Switch to {} when you are ready to start making custom fork changes.",
-            config.branches.patch
-        ));
+        if current_ref == output_branch && worktree_clean {
+            notes.push(format!(
+                "You can keep working directly on {} now.",
+                output_branch
+            ));
+        } else {
+            notes.push(format!(
+                "When you are ready to start making custom fork changes, switch to {}.",
+                output_branch
+            ));
+        }
 
         Ok(InitReport {
             config_path: request.config_path.clone(),
@@ -362,37 +387,59 @@ where
         };
 
         let mut state = self.state.load()?;
+        let original_ref = self.git.current_ref(&request.repo_path)?;
+        let author_base = state
+            .author_base_sha
+            .clone()
+            .unwrap_or_else(|| request.config.branches.output.clone());
+        let author_commits = self.git.derive_patch_commits(&PatchDerivationRequest {
+            repo_path: request.repo_path.clone(),
+            patch_branch: request.config.branches.output.clone(),
+            base_ref: author_base,
+        })?;
+
         if !request.force
             && state.last_processed_upstream_sha.as_deref() == Some(upstream_sha.as_str())
+            && author_commits.is_empty()
         {
             return Ok(SyncReport {
                 outcome: SyncOutcome::NoChange,
                 used_agent: false,
                 upstream_sha: Some(upstream_sha),
                 patch_commits_applied: 0,
-                notes: vec!["Upstream SHA already processed.".to_string()],
+                notes: vec!["Upstream SHA already processed and no new user commits exist on the output branch.".to_string()],
             });
         }
 
-        let original_ref = self.git.current_ref(&request.repo_path)?;
+        if request.config.branches.patch != request.config.branches.output {
+            let _ = self.update_local_branch(
+                &request.repo_path,
+                &request.config.branches.patch,
+                &request.config.branches.output,
+                &original_ref,
+                true,
+            )?;
+        }
+
         let candidate_branch = format!("{}/sync", request.config.advanced.temp_branch_prefix);
         self.git
             .create_or_reset_branch(&request.repo_path, &candidate_branch, &upstream_sha)?;
-
-        let patch_base = state
-            .patch_base_sha
-            .clone()
-            .unwrap_or_else(|| upstream_sha.clone());
-        let patch_commits = self.git.derive_patch_commits(&PatchDerivationRequest {
-            repo_path: request.repo_path.clone(),
-            patch_branch: request.config.branches.patch.clone(),
-            base_ref: patch_base,
-        })?;
+        let managed_commit = self.write_managed_commit(
+            &request.repo_path,
+            &request.config_path,
+            &request.workflow_path,
+            request.workflow_path.exists(),
+            &request.config,
+            &candidate_branch,
+            "Refresh ForkSync managed files",
+        )?;
+        self.git
+            .create_or_reset_branch(&request.repo_path, &candidate_branch, &managed_commit)?;
 
         let replay = self.git.replay_patch_stack(&ReplayRequest {
             repo_path: request.repo_path.clone(),
             candidate_branch: candidate_branch.clone(),
-            patch_commits: patch_commits.clone(),
+            patch_commits: author_commits.clone(),
         })?;
 
         if replay.status == ReplayStatus::Conflict {
@@ -417,7 +464,7 @@ where
                 upstream_sha: Some(upstream_sha),
                 patch_commits_applied: replay.applied_commits.len(),
                 notes: vec![
-                    "Patch replay conflict detected. Agent repair is not wired yet.".to_string(),
+                    "Replaying user commits from the output branch hit a conflict. Agent repair is not wired yet.".to_string(),
                 ],
             });
         }
@@ -425,7 +472,7 @@ where
         let candidate_head = replay
             .head_sha
             .clone()
-            .unwrap_or_else(|| upstream_sha.clone());
+            .unwrap_or_else(|| managed_commit.clone());
 
         if !request.dry_run {
             self.git.create_or_reset_branch(
@@ -451,8 +498,8 @@ where
 
         state.last_processed_upstream_sha = Some(upstream_sha.clone());
         state.last_good_sync_sha = Some(candidate_head.clone());
-        if state.patch_base_sha.is_none() {
-            state.patch_base_sha = Some(candidate_head.clone());
+        if !request.dry_run && request.config.sync.update_output_branch {
+            state.author_base_sha = Some(candidate_head.clone());
         }
         state.history.push(RunRecord {
             recorded_at: "local-debug".to_string(),
@@ -460,8 +507,9 @@ where
             upstream_sha: Some(upstream_sha.clone()),
             live_sha: Some(candidate_head.clone()),
             notes: vec![format!(
-                "Applied {} patch commit(s).",
-                replay.applied_commits.len()
+                "Applied {} user commit(s) from {}.",
+                replay.applied_commits.len(),
+                request.config.branches.output
             )],
         });
         self.state.save(&state)?;
@@ -474,7 +522,10 @@ where
             notes: vec![
                 format!("Updated {}.", request.config.branches.live),
                 if request.config.sync.update_output_branch {
-                    format!("Updated {}.", request.config.branches.output)
+                    format!(
+                        "Updated {} from latest upstream plus user commits on {}.",
+                        request.config.branches.output, request.config.branches.output
+                    )
                 } else {
                     "Skipped output branch update by config.".to_string()
                 },
@@ -494,26 +545,30 @@ where
         Ok("origin".to_string())
     }
 
-    fn write_init_bootstrap_commit(
+    fn write_managed_commit(
         &self,
-        request: &InitRequest,
+        repo_path: &Path,
+        config_path: &Path,
+        workflow_path: &Path,
+        install_workflow: bool,
         config: &RepoConfig,
         base_ref: &str,
+        message: &str,
     ) -> Result<String, EngineError> {
         let temp_root = TempDir::new().map_err(|source| EngineError::CreateTempDir { source })?;
         let worktree_path = temp_root.path().join("bootstrap");
         self.git
-            .add_detached_worktree(&request.repo_path, &worktree_path, base_ref)?;
+            .add_detached_worktree(repo_path, &worktree_path, base_ref)?;
 
         let result = (|| {
-            let config_rel = repo_relative_path(&request.repo_path, &request.config_path)?;
+            let config_rel = repo_relative_path(repo_path, config_path)?;
             let config_path = worktree_path.join(&config_rel);
             write_to_path(&config_path, config)?;
 
             let mut commit_paths = vec![config_rel, PathBuf::from(".gitignore")];
 
-            if request.install_workflow {
-                let workflow_rel = repo_relative_path(&request.repo_path, &request.workflow_path)?;
+            if install_workflow {
+                let workflow_rel = repo_relative_path(repo_path, workflow_path)?;
                 let generated = generate_sync_workflow(config);
                 write_plain_file(&worktree_path.join(&workflow_rel), &generated.contents)?;
                 commit_paths.push(workflow_rel);
@@ -522,15 +577,11 @@ where
             ensure_forksync_gitignore_rules(&worktree_path)?;
 
             self.git
-                .commit_paths(
-                    &worktree_path,
-                    &commit_paths,
-                    "Initialize ForkSync bootstrap",
-                )
+                .commit_paths(&worktree_path, &commit_paths, message)
                 .map_err(EngineError::from)
         })();
 
-        let cleanup = self.git.remove_worktree(&request.repo_path, &worktree_path);
+        let cleanup = self.git.remove_worktree(repo_path, &worktree_path);
         match (result, cleanup) {
             (Ok(commit_sha), Ok(())) => Ok(commit_sha),
             (Err(err), Ok(())) => Err(err),
@@ -545,8 +596,13 @@ where
         branch: &str,
         target: &str,
         current_ref: &str,
+        worktree_clean: bool,
     ) -> Result<BranchUpdateOutcome, EngineError> {
         if current_ref == branch {
+            if worktree_clean {
+                self.git.hard_reset(repo_path, target)?;
+                return Ok(BranchUpdateOutcome::ResetCheckedOut);
+            }
             return Ok(BranchUpdateOutcome::SkippedCheckedOut);
         }
 

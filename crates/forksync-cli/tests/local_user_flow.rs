@@ -3,7 +3,6 @@ use forksync_state::{FileStateStore, StateStore};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::process::Stdio;
 use tempfile::TempDir;
 
 struct LocalForkFixture {
@@ -15,7 +14,7 @@ struct LocalForkFixture {
 }
 
 #[test]
-fn init_auto_commits_and_pushes_bootstrap() {
+fn init_bootstraps_main_for_direct_authoring() {
     let fixture = create_local_fork_fixture();
 
     let output = run_cli(&fixture.user_repo, ["init"]);
@@ -29,11 +28,8 @@ fn init_auto_commits_and_pushes_bootstrap() {
     let state_path = fixture.user_repo.join(".forksync/state/state.yml");
     assert!(state_path.exists(), "expected state file to exist");
 
-    let patch_config = git_output(
-        &fixture.user_repo,
-        ["show", "forksync/patches:.forksync.yml"],
-    );
-    let config = from_yaml_str(&patch_config).expect("parse generated config from patch branch");
+    let main_config = git_output(&fixture.user_repo, ["show", "main:.forksync.yml"]);
+    let config = from_yaml_str(&main_config).expect("parse generated config from main branch");
     assert_eq!(config.upstream.remote_name, "upstream");
     assert_eq!(config.upstream.branch, "main");
     assert_eq!(config.branches.patch, "forksync/patches");
@@ -43,19 +39,10 @@ fn init_auto_commits_and_pushes_bootstrap() {
     let current_branch = git_output(&fixture.user_repo, ["branch", "--show-current"]);
     assert_eq!(current_branch, "main");
     assert_eq!(git_output(&fixture.user_repo, ["status", "--short"]), "");
-    assert!(local_branch_exists(&fixture.user_repo, "forksync/patches"));
     assert!(local_branch_exists(&fixture.user_repo, "forksync/live"));
-    assert!(!ref_contains_path(
-        &fixture.user_repo,
-        "main",
-        ".forksync.yml"
-    ));
+    assert!(local_branch_exists(&fixture.user_repo, "forksync/patches"));
     assert!(
-        git_output(
-            &fixture.user_repo,
-            ["show", "forksync/patches:.forksync.yml"]
-        )
-        .contains("forksync/patches")
+        git_output(&fixture.user_repo, ["show", "main:.forksync.yml"]).contains("forksync/patches")
     );
     assert!(
         git_output(&fixture.user_repo, ["show", "forksync/live:.forksync.yml"])
@@ -76,8 +63,8 @@ fn init_auto_commits_and_pushes_bootstrap() {
         .load()
         .expect("load persisted state");
     assert!(
-        state.patch_base_sha.is_some(),
-        "expected patch base sha to be recorded"
+        state.author_base_sha.is_some(),
+        "expected author base sha to be recorded"
     );
 }
 
@@ -105,6 +92,9 @@ fn init_keeps_dirty_feature_branch_checked_out() {
         "?? WIP.txt"
     );
     assert!(
+        git_output(&fixture.user_repo, ["show", "main:.forksync.yml"]).contains("forksync/patches")
+    );
+    assert!(
         git_output_git_dir(&fixture.fork_remote, ["show", "main:.forksync.yml"])
             .contains("forksync/patches")
     );
@@ -116,7 +106,7 @@ fn init_keeps_dirty_feature_branch_checked_out() {
 }
 
 #[test]
-fn sync_replays_patch_branch_onto_updated_upstream() {
+fn sync_replays_main_commits_onto_updated_upstream() {
     let fixture = create_local_fork_fixture();
 
     let init_output = run_cli(&fixture.user_repo, ["init"]);
@@ -127,7 +117,6 @@ fn sync_replays_patch_branch_onto_updated_upstream() {
         String::from_utf8_lossy(&init_output.stderr)
     );
 
-    git(&fixture.user_repo, ["switch", "forksync/patches"]);
     fs::write(fixture.user_repo.join("PATCH.txt"), "local patch\n").expect("write patch file");
     git(&fixture.user_repo, ["add", "PATCH.txt"]);
     git(&fixture.user_repo, ["commit", "-m", "Add local patch"]);
@@ -186,6 +175,11 @@ fn sync_replays_patch_branch_onto_updated_upstream() {
     assert!(
         state.last_good_sync_sha.is_some(),
         "expected last good sync sha to be populated"
+    );
+    assert_eq!(
+        state.author_base_sha.as_deref(),
+        state.last_good_sync_sha.as_deref(),
+        "author base should advance to the latest generated main/live state after sync"
     );
 }
 
@@ -328,17 +322,6 @@ fn remote_branch_exists(git_dir: &Path, branch: &str) -> bool {
         ])
         .status()
         .expect("run git show-ref for bare repo")
-        .success()
-}
-
-fn ref_contains_path(cwd: &Path, reference: &str, path: &str) -> bool {
-    Command::new("git")
-        .current_dir(cwd)
-        .args(["cat-file", "-e", &format!("{reference}:{path}")])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .expect("run git cat-file")
         .success()
 }
 

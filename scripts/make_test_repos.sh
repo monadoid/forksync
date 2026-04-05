@@ -65,22 +65,23 @@ Repo layout:
 Suggested local dogfood flow:
   1. cd "$USER_REPO"
   2. forksync init
-  3. git switch forksync/patches
-  4. git show HEAD:.forksync.yml
-  5. echo "local patch" > PATCH.txt
-  6. git add PATCH.txt && git commit -m "Add local patch"
-  7. echo "upstream change" > "$UPSTREAM_WORKING/UPSTREAM.txt"
-  8. git -C "$UPSTREAM_WORKING" add UPSTREAM.txt
-  9. git -C "$UPSTREAM_WORKING" commit -m "Add upstream change"
- 10. git -C "$UPSTREAM_WORKING" push "$UPSTREAM_REMOTE" main
- 11. forksync sync --trigger local-debug --no-agent
- 12. git show main:PATCH.txt
- 13. git show main:UPSTREAM.txt
+  3. git show main:.forksync.yml
+  4. echo "local patch" > PATCH.txt
+  5. git add PATCH.txt && git commit -m "Add local patch"
+  6. echo "upstream change" > "$UPSTREAM_WORKING/UPSTREAM.txt"
+  7. git -C "$UPSTREAM_WORKING" add UPSTREAM.txt
+  8. git -C "$UPSTREAM_WORKING" commit -m "Add upstream change"
+  9. git -C "$UPSTREAM_WORKING" push "$UPSTREAM_REMOTE" main
+ 10. forksync sync --trigger local-debug --no-agent
+ 11. git show main:PATCH.txt
+ 12. git show main:UPSTREAM.txt
 
 Notes:
   - You can omit the argument entirely to recreate the default demo at:
       $ROOT_DIR/sandbox/repos/demo
   - Under the current ForkSync model, make your own code changes on:
-      forksync/patches
-    The output branch (main by default) is machine-managed.
+      main
+    ForkSync derives your local fork layer from commits on main since the last generated base.
+  - ForkSync keeps the generated recovery/debug branch at:
+      forksync/live
 EOF
