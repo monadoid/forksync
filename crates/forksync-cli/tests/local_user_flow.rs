@@ -285,7 +285,10 @@ fn sync_conflict_reports_failed_agent_instead_of_human_review() {
         ],
     );
 
-    let sync_output = run_cli(&fixture.user_repo, ["sync", "--trigger", "local-debug"]);
+    let sync_output = run_cli(
+        &fixture.user_repo,
+        ["sync", "--trigger", "local-debug", "--no-agent"],
+    );
     assert!(
         sync_output.status.success(),
         "sync failed:\nstdout:\n{}\nstderr:\n{}",
@@ -294,7 +297,7 @@ fn sync_conflict_reports_failed_agent_instead_of_human_review() {
     );
     let stdout = String::from_utf8_lossy(&sync_output.stdout);
     assert!(stdout.contains("FailedAgent"));
-    assert!(stdout.contains("agent repair failed to run"));
+    assert!(stdout.contains("agent repair is disabled"));
 
     let state = FileStateStore::new(fixture.user_repo.join(".forksync/state/state.yml"))
         .load()

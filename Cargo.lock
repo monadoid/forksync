@@ -149,6 +149,9 @@ name = "forksync-agent"
 version = "0.1.0"
 dependencies = [
  "forksync-config",
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror",
 ]
 

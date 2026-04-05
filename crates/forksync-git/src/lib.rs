@@ -122,6 +122,7 @@ pub trait GitBackend: Send + Sync {
     ) -> Result<(), GitError>;
     fn remove_worktree(&self, repo_path: &Path, worktree_path: &Path) -> Result<(), GitError>;
     fn delete_branch(&self, repo_path: &Path, branch: &str) -> Result<(), GitError>;
+    fn abort_cherry_pick(&self, repo_path: &Path) -> Result<(), GitError>;
     fn derive_patch_commits(
         &self,
         request: &PatchDerivationRequest,
@@ -159,34 +160,6 @@ impl SystemGitBackend {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    }
-
-    fn run_git_allow_failure<I, S>(&self, repo_path: &Path, args: I) -> Result<(), GitError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
-    {
-        let args_vec: Vec<_> = args.into_iter().collect();
-        let command = render_command(repo_path, &args_vec);
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(repo_path)
-            .args(args_vec.iter().map(|arg| arg.as_ref()))
-            .status()
-            .map_err(|source| GitError::Io {
-                command: command.clone(),
-                source,
-            })?;
-
-        if !status.success() {
-            return Err(GitError::CommandFailed {
-                command,
-                status: status.code().unwrap_or(-1),
-                stderr: String::new(),
-            });
-        }
-
-        Ok(())
     }
 }
 
@@ -423,6 +396,11 @@ impl GitBackend for SystemGitBackend {
             .map(|_| ())
     }
 
+    fn abort_cherry_pick(&self, repo_path: &Path) -> Result<(), GitError> {
+        self.run_git(repo_path, ["cherry-pick", "--abort"])
+            .map(|_| ())
+    }
+
     fn derive_patch_commits(
         &self,
         request: &PatchDerivationRequest,
@@ -471,7 +449,6 @@ impl GitBackend for SystemGitBackend {
                 .map_err(|source| GitError::Io { command, source })?;
 
             if !output.status.success() {
-                let _ = self.run_git_allow_failure(&request.repo_path, ["cherry-pick", "--abort"]);
                 return Ok(ReplayResult {
                     status: ReplayStatus::Conflict,
                     applied_commits,

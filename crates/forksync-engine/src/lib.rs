@@ -440,15 +440,39 @@ where
         self.git
             .create_or_reset_branch(&request.repo_path, &candidate_branch, &managed_commit)?;
 
-        let replay = self.git.replay_patch_stack(&ReplayRequest {
-            repo_path: request.repo_path.clone(),
-            candidate_branch: candidate_branch.clone(),
-            patch_commits: author_commits.clone(),
-        })?;
-
         let mut used_agent = false;
         let mut sync_notes = Vec::new();
-        let candidate_head = if replay.status == ReplayStatus::Conflict {
+        let mut remaining_commits = author_commits.clone();
+        let mut applied_commit_count = 0usize;
+        let candidate_head = loop {
+            let replay = self.git.replay_patch_stack(&ReplayRequest {
+                repo_path: request.repo_path.clone(),
+                candidate_branch: candidate_branch.clone(),
+                patch_commits: remaining_commits.clone(),
+            })?;
+            applied_commit_count += replay.applied_commits.len();
+
+            if replay.status == ReplayStatus::Clean {
+                break replay
+                    .head_sha
+                    .clone()
+                    .unwrap_or_else(|| managed_commit.clone());
+            }
+
+            let Some(conflict_commit_sha) = replay.conflict_commit.clone() else {
+                return self.finish_failed_agent_sync(
+                    &request.repo_path,
+                    &candidate_branch,
+                    &original_ref,
+                    request.config.sync.prune_temp_branches,
+                    &mut state,
+                    upstream_sha,
+                    applied_commit_count,
+                    vec!["Patch replay reported a conflict without identifying the conflicting commit.".to_string()],
+                    true,
+                );
+            };
+
             if request.disable_agent || !request.config.agent.enabled {
                 return self.finish_failed_agent_sync(
                     &request.repo_path,
@@ -457,11 +481,12 @@ where
                     request.config.sync.prune_temp_branches,
                     &mut state,
                     upstream_sha,
-                    replay.applied_commits.len(),
+                    applied_commit_count,
                     vec![
                         "Patch replay hit a conflict, but agent repair is disabled for this run."
                             .to_string(),
                     ],
+                    true,
                 );
             }
 
@@ -475,10 +500,11 @@ where
                         request.config.sync.prune_temp_branches,
                         &mut state,
                         upstream_sha,
-                        replay.applied_commits.len(),
+                        applied_commit_count,
                         vec![format!(
                             "Patch replay hit a conflict, but the configured agent could not start: {error}"
                         )],
+                        true,
                     );
                 }
             };
@@ -490,10 +516,11 @@ where
                 live_branch: request.config.branches.live.clone(),
                 trigger: RepairTrigger::ReplayConflict,
                 system_prompt: format!(
-                    "Repair a ForkSync replay conflict by updating the candidate branch `{}` so it cleanly preserves user-authored commits from `{}` on top of upstream `{}`. Keep ForkSync-managed files intact and stop after producing a valid candidate commit.",
+                    "Repair the current ForkSync cherry-pick conflict on candidate branch `{}` so that user-authored commits from `{}` keep working on top of upstream `{}`. Resolve the active conflict, make any minimal supporting code edits needed, and stop once the current cherry-pick is ready to continue.",
                     candidate_branch, request.config.branches.output, upstream_sha
                 ),
                 validation_summary: None,
+                conflict_commit_sha: Some(conflict_commit_sha.clone()),
             };
 
             let repair_result = match agent.repair(&repair_request) {
@@ -506,10 +533,11 @@ where
                         request.config.sync.prune_temp_branches,
                         &mut state,
                         upstream_sha,
-                        replay.applied_commits.len(),
+                        applied_commit_count,
                         vec![format!(
                             "Patch replay hit a conflict, but agent repair failed to run: {error}"
                         )],
+                        true,
                     );
                 }
             };
@@ -517,14 +545,38 @@ where
             match repair_result.outcome {
                 AgentRepairOutcome::Repaired => {
                     used_agent = true;
+                    applied_commit_count += 1;
                     sync_notes.push(format!(
                         "Agent repair succeeded via {:?}: {}",
                         agent.provider(),
                         repair_result.summary
                     ));
-                    repair_result
-                        .commit_sha
-                        .unwrap_or(self.git.head_sha(&request.repo_path)?)
+                    let Some(conflict_index) = remaining_commits
+                        .iter()
+                        .position(|commit| commit.sha == conflict_commit_sha)
+                    else {
+                        return self.finish_failed_agent_sync(
+                            &request.repo_path,
+                            &candidate_branch,
+                            &original_ref,
+                            request.config.sync.prune_temp_branches,
+                            &mut state,
+                            upstream_sha,
+                            applied_commit_count,
+                            vec![format!(
+                                "Agent repair completed, but ForkSync could not find conflict commit {} in the remaining patch stack.",
+                                conflict_commit_sha
+                            )],
+                            false,
+                        );
+                    };
+                    remaining_commits = remaining_commits
+                        .into_iter()
+                        .skip(conflict_index + 1)
+                        .collect();
+                    if remaining_commits.is_empty() {
+                        break self.git.head_sha(&request.repo_path)?;
+                    }
                 }
                 AgentRepairOutcome::Failed | AgentRepairOutcome::NoChange => {
                     return self.finish_failed_agent_sync(
@@ -534,19 +586,15 @@ where
                         request.config.sync.prune_temp_branches,
                         &mut state,
                         upstream_sha,
-                        replay.applied_commits.len(),
+                        applied_commit_count,
                         vec![format!(
                             "Patch replay hit a conflict, and the configured agent did not produce a repaired candidate: {}",
                             repair_result.summary
                         )],
+                        true,
                     );
                 }
             }
-        } else {
-            replay
-                .head_sha
-                .clone()
-                .unwrap_or_else(|| managed_commit.clone())
         };
 
         if !request.dry_run {
@@ -587,8 +635,7 @@ where
             live_sha: Some(candidate_head.clone()),
             notes: vec![format!(
                 "Applied {} user commit(s) from {}.",
-                replay.applied_commits.len(),
-                request.config.branches.output
+                applied_commit_count, request.config.branches.output
             )],
         });
         self.state.save(&state)?;
@@ -601,7 +648,7 @@ where
             },
             used_agent,
             upstream_sha: Some(upstream_sha),
-            patch_commits_applied: replay.applied_commits.len(),
+            patch_commits_applied: applied_commit_count,
             notes: {
                 sync_notes.push(format!("Updated {}.", request.config.branches.live));
                 sync_notes.push(if request.config.sync.update_output_branch {
@@ -627,7 +674,11 @@ where
         upstream_sha: String,
         patch_commits_applied: usize,
         notes: Vec<String>,
+        abort_cherry_pick: bool,
     ) -> Result<SyncReport, EngineError> {
+        if abort_cherry_pick {
+            let _ = self.git.abort_cherry_pick(repo_path);
+        }
         self.git.checkout(repo_path, original_ref)?;
         if prune_temp_branches {
             self.git.delete_branch(repo_path, candidate_branch)?;

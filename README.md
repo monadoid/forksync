@@ -162,6 +162,7 @@ Agent design rules:
 - provider selection belongs in typed config, even if v1 only fully exercises one provider
 - adding a second provider later should not require redesigning the engine pipeline
 - future hosted ForkSync agent mode should fit behind the same typed provider seam
+- the current repair loop owns a typed `edit_file` / `finish` tool protocol in Rust so providers stay swappable
 
 ## Authentication Model
 
@@ -613,18 +614,18 @@ Once the setup and local sync paths exist, the first manual demo should look lik
 9. Inspect `forksync/live`, `main`, and `.forksync/state`.
 10. Repeat with a conflict scenario.
 
-### PR 11: Agent Abstraction and Stub Provider
+### PR 11: Agent Abstraction and Provider Loop
 
-- [ ] Implement `forksync-agent`
-  - [ ] repair trait
-  - [ ] bounded-attempt runtime contract
-  - [ ] `OpenCode` default provider stub
-  - [ ] swappable provider factory seam
-  - [ ] structured repair result reporting
+- [x] Implement `forksync-agent`
+  - [x] repair trait
+  - [x] bounded-attempt runtime contract
+  - [x] `OpenCode` default provider loop
+  - [x] swappable provider factory seam
+  - [x] structured repair result reporting
 - [ ] TDD scope
   - [ ] Unit tests for config gating
-  - [ ] Integration tests for agent-invocation decision points
-  - [ ] Failure propagation tests
+  - [x] Integration tests for agent-invocation decision points
+  - [x] Failure propagation tests
 
 ### PR 12: Documentation and Hardening
 
@@ -667,7 +668,7 @@ Once the setup and local sync paths exist, the first manual demo should look lik
   - [x] candidate branch creation
   - [x] user-commit derivation from recorded author base
   - [x] replay user commits from `main`
-  - [ ] agent repair path
+  - [x] agent repair path
   - [ ] validation path
   - [x] live branch update
   - [x] output branch update
@@ -693,6 +694,7 @@ Once the setup and local sync paths exist, the first manual demo should look lik
 - [ ] user-friendly CLI distribution via npm, Homebrew, and cargo install flows
 - [ ] bring-your-own OpenCode provider credentials and model selection
 - [ ] hosted ForkSync agent mode with user login
+- [ ] restrict agent edits to conflict files or an explicit allowlist for stronger safety
 - [ ] deterministic auto-detection of build, test, and install commands
 - [ ] richer validation profiles
 - [ ] patch registry for publishing reusable patch layers
