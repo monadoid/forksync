@@ -39,16 +39,17 @@ Repo layout:
 
 Suggested local dogfood flow:
   1. cd "$USER_REPO"
-  2. cargo run -p forksync-cli --manifest-path "$ROOT_DIR/Cargo.toml" -- init
-  3. git add .forksync.yml .github/workflows/forksync.yml .gitignore
-  4. git commit -m "Add ForkSync bootstrap"
-  5. echo "local patch" > PATCH.txt
-  6. git add PATCH.txt && git commit -m "Add local patch"
-  7. echo "upstream change" > "$UPSTREAM_WORKING/UPSTREAM.txt"
-  8. git -C "$UPSTREAM_WORKING" add UPSTREAM.txt
-  9. git -C "$UPSTREAM_WORKING" commit -m "Add upstream change"
- 10. git -C "$UPSTREAM_WORKING" push "$UPSTREAM_REMOTE" main
- 11. cargo run -p forksync-cli --manifest-path "$ROOT_DIR/Cargo.toml" -- sync --trigger local-debug --no-agent
- 12. git show main:PATCH.txt
- 13. git show main:UPSTREAM.txt
+  2. forksync init
+  3. git switch forksync/patches
+  4. git add .forksync.yml .github/workflows/forksync.yml .gitignore
+  5. git commit -m "Add ForkSync bootstrap"
+  6. echo "local patch" > PATCH.txt
+  7. git add PATCH.txt && git commit -m "Add local patch"
+  8. echo "upstream change" > "$UPSTREAM_WORKING/UPSTREAM.txt"
+  9. git -C "$UPSTREAM_WORKING" add UPSTREAM.txt
+ 10. git -C "$UPSTREAM_WORKING" commit -m "Add upstream change"
+ 11. git -C "$UPSTREAM_WORKING" push "$UPSTREAM_REMOTE" main
+ 12. forksync sync --trigger local-debug --no-agent
+ 13. git show main:PATCH.txt
+ 14. git show main:UPSTREAM.txt
 EOF

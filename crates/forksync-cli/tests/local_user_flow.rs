@@ -40,7 +40,7 @@ fn init_creates_generated_files_state_and_branches() {
     assert_eq!(config.branches.output, "main");
 
     let current_branch = git_output(&fixture.user_repo, ["branch", "--show-current"]);
-    assert_eq!(current_branch, "forksync/patches");
+    assert_eq!(current_branch, "main");
     assert!(local_branch_exists(&fixture.user_repo, "forksync/patches"));
     assert!(local_branch_exists(&fixture.user_repo, "forksync/live"));
 
@@ -65,6 +65,7 @@ fn sync_replays_patch_branch_onto_updated_upstream() {
         String::from_utf8_lossy(&init_output.stderr)
     );
 
+    git(&fixture.user_repo, ["switch", "forksync/patches"]);
     git(
         &fixture.user_repo,
         [
@@ -212,7 +213,7 @@ fn create_local_fork_fixture() -> LocalForkFixture {
 }
 
 fn run_cli<const N: usize>(cwd: &Path, args: [&str; N]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_forksync-cli"))
+    Command::new(env!("CARGO_BIN_EXE_forksync"))
         .current_dir(cwd)
         .args(args)
         .output()

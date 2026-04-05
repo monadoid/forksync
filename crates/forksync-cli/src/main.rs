@@ -210,12 +210,13 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
     }
     println!("Next steps:");
     println!(
-        "1. Review {} and {}.",
+        "1. Review {} and {} in your working tree.",
         config_path.display(),
         workflow_path.display()
     );
-    println!("2. Commit the generated files.");
-    println!("3. Run `forksync sync --trigger local-debug` to preview local sync behavior.");
+    println!("2. Switch to `{}`.", report.patch_branch);
+    println!("3. Commit the generated files on that branch.");
+    println!("4. Run `forksync sync --trigger local-debug` to preview local sync behavior.");
 
     Ok(())
 }

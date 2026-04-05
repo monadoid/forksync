@@ -162,9 +162,13 @@ where
                 .default_branch_for_remote(&request.repo_path, &upstream_remote)?,
         };
 
-        let current_ref = self.git.current_ref(&request.repo_path)?;
         let current_head = self.git.head_sha(&request.repo_path)?;
-        let output_branch = if current_ref == "HEAD" || current_ref.len() == 40 {
+        let current_ref = self.git.current_ref(&request.repo_path)?;
+        let output_branch = if self.git.remote_exists(&request.repo_path, "origin")? {
+            self.git
+                .default_branch_for_remote(&request.repo_path, "origin")
+                .unwrap_or_else(|_| upstream_branch.clone())
+        } else if current_ref == "HEAD" || current_ref.len() == 40 {
             upstream_branch.clone()
         } else {
             current_ref.clone()
@@ -190,8 +194,6 @@ where
                 &config.branches.live,
                 &current_head,
             )?;
-            self.git
-                .checkout(&request.repo_path, &config.branches.patch)?;
         }
 
         write_to_path(&request.config_path, &config)?;
@@ -221,8 +223,20 @@ where
 
         if request.create_branches {
             notes.push(format!(
-                "Checked out {} so the generated files can be committed into the patch layer.",
-                config.branches.patch
+                "Created {} and {} in the background without changing your current checkout.",
+                config.branches.patch, config.branches.live
+            ));
+        }
+
+        notes.push(format!(
+            "When you are ready, switch to {} and commit the generated files into the patch layer.",
+            config.branches.patch
+        ));
+
+        if current_ref != output_branch {
+            notes.push(format!(
+                "Detected output branch {} while leaving your current branch {} untouched.",
+                output_branch, current_ref
             ));
         }
 

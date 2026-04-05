@@ -239,9 +239,9 @@ The primary user journey in v1 should be optimized for a fork-first, almost-no-c
 8. ForkSync creates or updates the local branches needed for management:
    - `forksync/patches`
    - `forksync/live`
-9. ForkSync checks out `forksync/patches` so generated files and future customizations live in the patch layer.
-10. The user reviews the generated config and workflow.
-11. The user commits the generated files on `forksync/patches` and pushes.
+9. ForkSync creates `forksync/patches` and `forksync/live` in the background without changing the user's current checkout.
+10. The user reviews the generated config and workflow in their current working tree.
+11. When ready, the user switches to `forksync/patches`, commits the generated files there, and pushes.
 12. From that point on, GitHub Actions keeps the fork current on schedule and via manual dispatch.
 
 ### No-config goal
@@ -251,7 +251,8 @@ The no-config experience should be:
 - clone fork
 - run `forksync init`
 - review generated files
-- commit them on `forksync/patches`
+- switch to `forksync/patches`
+- commit them there
 - push
 
 That is the UX bar to optimize for.
@@ -267,7 +268,8 @@ That is the UX bar to optimize for.
 - generate a complete `.forksync.yml` from typed defaults
 - generate the GitHub workflow file
 - create local management branches if missing
-- leave the user on `forksync/patches`
+- leave the user's current branch untouched
+- tell the user when to switch to `forksync/patches`
 - print the exact next steps for the user
 
 ### What the user should see after `forksync init`
@@ -286,10 +288,11 @@ Before trusting GitHub Actions, a user should be able to test ForkSync locally:
 
 1. Clone their fork.
 2. Run `forksync init`.
-3. Make a custom change on `forksync/patches`.
-4. Simulate upstream movement locally or point to a real upstream remote.
-5. Run `forksync sync --trigger local-debug`.
-6. Inspect:
+3. Switch to `forksync/patches` and commit the generated files there.
+4. Make a custom change on `forksync/patches`.
+5. Simulate upstream movement locally or point to a real upstream remote.
+6. Run `forksync sync --trigger local-debug`.
+7. Inspect:
    - resulting branch tips
    - generated state files
    - validation behavior
@@ -579,12 +582,13 @@ Once the setup and local sync paths exist, the first manual demo should look lik
 2. Clone the fork into `sandbox/repos/<name>`.
 3. Run `forksync init`.
 4. Review `.forksync.yml` and `.github/workflows/forksync.yml`.
-5. Commit the generated files.
-6. Create a change on `forksync/patches`.
-7. Simulate an upstream change.
-8. Run `forksync sync --trigger local-debug`.
-9. Inspect `forksync/live`, `main`, and `.forksync/state`.
-10. Repeat with a conflict scenario.
+5. Switch to `forksync/patches`.
+6. Commit the generated files.
+7. Create a change on `forksync/patches`.
+8. Simulate an upstream change.
+9. Run `forksync sync --trigger local-debug`.
+10. Inspect `forksync/live`, `main`, and `.forksync/state`.
+11. Repeat with a conflict scenario.
 
 ### PR 11: Agent Abstraction and Stub Provider
 
@@ -663,6 +667,7 @@ Once the setup and local sync paths exist, the first manual demo should look lik
 
 - [ ] hosted event-driven sync mode via GitHub App or relay
 - [ ] support for GitLab and other forge providers beyond GitHub
+- [ ] user-friendly CLI distribution via npm, Homebrew, and cargo install flows
 - [ ] deterministic auto-detection of build, test, and install commands
 - [ ] richer validation profiles
 - [ ] patch registry for publishing reusable patch layers
