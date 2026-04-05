@@ -1,0 +1,17 @@
+[package]
+name = "forksync-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+forksync-agent = { path = "../forksync-agent" }
+forksync-config = { path = "../forksync-config" }
+forksync-git = { path = "../forksync-git" }
+forksync-github = { path = "../forksync-github" }
+forksync-state = { path = "../forksync-state" }
+thiserror.workspace = true
+
+[lints]
+workspace = true

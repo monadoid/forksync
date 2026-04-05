@@ -1,0 +1,40 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Tooling
+/.cargo/
+/.idea/
+/.vscode/
+
+# OS
+.DS_Store
+
+# Local runtime state
+/.forksync/state/
+/.forksync/tmp/
+
+# Sandbox scratch space
+/sandbox/repos/*
+!/sandbox/repos/.gitkeep
+/sandbox/act/*
+!/sandbox/act/.gitkeep
+
+# act
+/.act/
+
+# Logs and artifacts
+*.log
+*.out
+*.tmp
+
+# Environment files
+/.env
+.env
+.env.*
+!.env.example
+
+# Coverage and test artifacts
+/coverage/
+/junit.xml
+/lcov.info
