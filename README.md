@@ -236,9 +236,8 @@ The primary user journey in v1 should be optimized for a fork-first, almost-no-c
    - assume live branch `forksync/live`
    - assume validation mode `none`
    - assume GitHub workflow installation is desired
-6. ForkSync writes `.forksync.yml`.
-7. ForkSync writes a GitHub Actions workflow file under `.github/workflows/`.
-8. ForkSync creates a bootstrap commit in a detached temporary worktree so the generated setup can be applied without hijacking the user's current checkout.
+6. ForkSync prepares `.forksync.yml` and `.github/workflows/forksync.yml` inside a bootstrap commit.
+7. ForkSync creates that bootstrap commit in a detached temporary worktree so the generated setup can be applied without hijacking the user's current checkout.
 9. ForkSync creates or updates the local branches needed for management:
    - `forksync/patches`
    - `forksync/live`
@@ -270,7 +269,7 @@ That is the UX bar to optimize for.
 - generate the GitHub workflow file
 - create the bootstrap commit inside a detached temporary worktree
 - create local management branches if missing
-- update the output branch from the bootstrap commit when it is safe to do so locally
+- update only non-checked-out local refs from the bootstrap commit
 - attempt to push the managed refs to `origin`
 - leave the user's current branch untouched
 - tell the user to switch to `forksync/patches` when they want to start customizing
@@ -280,11 +279,11 @@ That is the UX bar to optimize for.
 
 The user should be able to understand ForkSync from the created artifacts alone:
 
-- `.forksync.yml` explains what branches and policies are in play
-- `.github/workflows/forksync.yml` shows when sync runs
+- `.forksync.yml` explains what branches and policies are in play once they inspect a managed branch
+- `.github/workflows/forksync.yml` shows when sync runs once they inspect a managed branch
 - `forksync/patches` is where the user keeps their custom changes
 - `forksync/live` is the machine-generated result
-- `main` stays current automatically unless configured otherwise
+- the configured output branch stays current automatically unless configured otherwise
 
 ### Local user experience before pushing
 

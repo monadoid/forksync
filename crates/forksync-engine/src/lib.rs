@@ -115,8 +115,7 @@ pub enum EngineError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BranchUpdateOutcome {
     ResetBackground,
-    FastForwardedCheckedOut,
-    SkippedCheckedOutDirty,
+    SkippedCheckedOut,
 }
 
 pub struct SyncEngine<G, A, S, R> {
@@ -181,7 +180,6 @@ where
 
         let current_head = self.git.head_sha(&request.repo_path)?;
         let current_ref = self.git.current_ref(&request.repo_path)?;
-        let worktree_clean = self.git.worktree_clean(&request.repo_path)?;
         let output_branch = if self.git.remote_exists(&request.repo_path, "origin")? {
             self.git
                 .default_branch_for_remote(&request.repo_path, "origin")
@@ -205,6 +203,7 @@ where
         let workflow_path = request
             .install_workflow
             .then(|| request.workflow_path.clone());
+        ensure_local_exclude_rules(&self.git.git_dir(&request.repo_path)?)?;
 
         let mut local_branch_updates = Vec::new();
         if request.create_branches {
@@ -215,7 +214,6 @@ where
                     &config.branches.patch,
                     &bootstrap_commit_sha,
                     &current_ref,
-                    worktree_clean,
                 )?,
             ));
             local_branch_updates.push((
@@ -225,7 +223,6 @@ where
                     &config.branches.live,
                     &bootstrap_commit_sha,
                     &current_ref,
-                    worktree_clean,
                 )?,
             ));
         }
@@ -236,7 +233,6 @@ where
                 &config.branches.output,
                 &bootstrap_commit_sha,
                 &current_ref,
-                worktree_clean,
             )?,
         ));
 
@@ -266,12 +262,8 @@ where
                     "Updated local branch {} in the background.",
                     branch
                 )),
-                BranchUpdateOutcome::FastForwardedCheckedOut => notes.push(format!(
-                    "Fast-forwarded your checked-out branch {} to include the bootstrap commit.",
-                    branch
-                )),
-                BranchUpdateOutcome::SkippedCheckedOutDirty => notes.push(format!(
-                    "Left checked-out branch {} unchanged locally because your worktree is dirty; the bootstrap commit still exists on the managed refs and can be pushed remotely.",
+                BranchUpdateOutcome::SkippedCheckedOut => notes.push(format!(
+                    "Left checked-out branch {} untouched locally; inspect the bootstrap by switching to a managed branch.",
                     branch
                 )),
             }
@@ -553,15 +545,9 @@ where
         branch: &str,
         target: &str,
         current_ref: &str,
-        worktree_clean: bool,
     ) -> Result<BranchUpdateOutcome, EngineError> {
         if current_ref == branch {
-            if !worktree_clean {
-                return Ok(BranchUpdateOutcome::SkippedCheckedOutDirty);
-            }
-
-            self.git.merge_ff_only(repo_path, target)?;
-            return Ok(BranchUpdateOutcome::FastForwardedCheckedOut);
+            return Ok(BranchUpdateOutcome::SkippedCheckedOut);
         }
 
         self.git.create_or_reset_branch(repo_path, branch, target)?;
@@ -633,6 +619,47 @@ fn repo_relative_path(repo_path: &Path, path: &Path) -> Result<PathBuf, EngineEr
             path: path.to_path_buf(),
             repo_path: repo_path.to_path_buf(),
         })
+}
+
+fn ensure_local_exclude_rules(git_dir: &Path) -> Result<(), EngineError> {
+    let exclude_path = git_dir.join("info/exclude");
+    if let Some(parent) = exclude_path.parent() {
+        fs::create_dir_all(parent).map_err(|source| EngineError::CreateDir {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+
+    let mut contents = if exclude_path.exists() {
+        fs::read_to_string(&exclude_path).map_err(|source| EngineError::WriteFile {
+            path: exclude_path.clone(),
+            source,
+        })?
+    } else {
+        String::new()
+    };
+
+    let required_rules = [".forksync/state/", ".forksync/tmp/"];
+    let mut changed = false;
+    for rule in required_rules {
+        if !contents.lines().any(|line| line.trim() == rule) {
+            if !contents.is_empty() && !contents.ends_with('\n') {
+                contents.push('\n');
+            }
+            contents.push_str(rule);
+            contents.push('\n');
+            changed = true;
+        }
+    }
+
+    if changed {
+        fs::write(&exclude_path, contents).map_err(|source| EngineError::WriteFile {
+            path: exclude_path,
+            source,
+        })?;
+    }
+
+    Ok(())
 }
 
 fn ensure_forksync_gitignore_rules(repo_path: &std::path::Path) -> Result<(), EngineError> {

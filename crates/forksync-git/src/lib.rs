@@ -68,17 +68,11 @@ pub enum GitError {
 
 pub trait GitBackend: Send + Sync {
     fn ensure_repo(&self, repo_path: &Path) -> Result<(), GitError>;
+    fn git_dir(&self, repo_path: &Path) -> Result<PathBuf, GitError>;
     fn worktree_clean(&self, repo_path: &Path) -> Result<bool, GitError>;
     fn paths_clean(&self, repo_path: &Path, paths: &[PathBuf]) -> Result<bool, GitError>;
     fn current_ref(&self, repo_path: &Path) -> Result<String, GitError>;
     fn checkout(&self, repo_path: &Path, reference: &str) -> Result<(), GitError>;
-    fn checkout_new_branch(
-        &self,
-        repo_path: &Path,
-        branch: &str,
-        target: &str,
-    ) -> Result<(), GitError>;
-    fn merge_ff_only(&self, repo_path: &Path, target: &str) -> Result<(), GitError>;
     fn head_sha(&self, repo_path: &Path) -> Result<String, GitError>;
     fn remote_exists(&self, repo_path: &Path, remote_name: &str) -> Result<bool, GitError>;
     fn get_remote_url(&self, repo_path: &Path, remote_name: &str) -> Result<String, GitError>;
@@ -204,6 +198,15 @@ impl GitBackend for SystemGitBackend {
             })
     }
 
+    fn git_dir(&self, repo_path: &Path) -> Result<PathBuf, GitError> {
+        let git_dir = PathBuf::from(self.run_git(repo_path, ["rev-parse", "--git-dir"])?);
+        if git_dir.is_absolute() {
+            Ok(git_dir)
+        } else {
+            Ok(repo_path.join(git_dir))
+        }
+    }
+
     fn worktree_clean(&self, repo_path: &Path) -> Result<bool, GitError> {
         let status = self.run_git(repo_path, ["status", "--porcelain"])?;
         Ok(status.is_empty())
@@ -235,21 +238,6 @@ impl GitBackend for SystemGitBackend {
 
     fn checkout(&self, repo_path: &Path, reference: &str) -> Result<(), GitError> {
         self.run_git(repo_path, ["checkout", "--quiet", reference])
-            .map(|_| ())
-    }
-
-    fn checkout_new_branch(
-        &self,
-        repo_path: &Path,
-        branch: &str,
-        target: &str,
-    ) -> Result<(), GitError> {
-        self.run_git(repo_path, ["checkout", "--quiet", "-B", branch, target])
-            .map(|_| ())
-    }
-
-    fn merge_ff_only(&self, repo_path: &Path, target: &str) -> Result<(), GitError> {
-        self.run_git(repo_path, ["merge", "--ff-only", target])
             .map(|_| ())
     }
 

@@ -1,8 +1,9 @@
-use forksync_config::load_from_path;
+use forksync_config::from_yaml_str;
 use forksync_state::{FileStateStore, StateStore};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::process::Stdio;
 use tempfile::TempDir;
 
 struct LocalForkFixture {
@@ -26,11 +27,13 @@ fn init_auto_commits_and_pushes_bootstrap() {
     );
 
     let state_path = fixture.user_repo.join(".forksync/state/state.yml");
-
     assert!(state_path.exists(), "expected state file to exist");
 
-    let config_path = fixture.user_repo.join(".forksync.yml");
-    let config = load_from_path(&config_path).expect("load generated config");
+    let patch_config = git_output(
+        &fixture.user_repo,
+        ["show", "forksync/patches:.forksync.yml"],
+    );
+    let config = from_yaml_str(&patch_config).expect("parse generated config from patch branch");
     assert_eq!(config.upstream.remote_name, "upstream");
     assert_eq!(config.upstream.branch, "main");
     assert_eq!(config.branches.patch, "forksync/patches");
@@ -39,11 +42,14 @@ fn init_auto_commits_and_pushes_bootstrap() {
 
     let current_branch = git_output(&fixture.user_repo, ["branch", "--show-current"]);
     assert_eq!(current_branch, "main");
+    assert_eq!(git_output(&fixture.user_repo, ["status", "--short"]), "");
     assert!(local_branch_exists(&fixture.user_repo, "forksync/patches"));
     assert!(local_branch_exists(&fixture.user_repo, "forksync/live"));
-    assert!(
-        git_output(&fixture.user_repo, ["show", "main:.forksync.yml"]).contains("forksync/patches")
-    );
+    assert!(!ref_contains_path(
+        &fixture.user_repo,
+        "main",
+        ".forksync.yml"
+    ));
     assert!(
         git_output(
             &fixture.user_repo,
@@ -53,6 +59,10 @@ fn init_auto_commits_and_pushes_bootstrap() {
     );
     assert!(
         git_output(&fixture.user_repo, ["show", "forksync/live:.forksync.yml"])
+            .contains("forksync/patches")
+    );
+    assert!(
+        git_output_git_dir(&fixture.fork_remote, ["show", "main:.forksync.yml"])
             .contains("forksync/patches")
     );
     assert!(remote_branch_exists(&fixture.fork_remote, "main"));
@@ -90,7 +100,10 @@ fn init_keeps_dirty_feature_branch_checked_out() {
         git_output(&fixture.user_repo, ["branch", "--show-current"]),
         "feature/wip"
     );
-    assert!(git_output(&fixture.user_repo, ["status", "--short"]).contains("?? WIP.txt"));
+    assert_eq!(
+        git_output(&fixture.user_repo, ["status", "--short"]),
+        "?? WIP.txt"
+    );
     assert!(
         git_output_git_dir(&fixture.fork_remote, ["show", "main:.forksync.yml"])
             .contains("forksync/patches")
@@ -315,6 +328,17 @@ fn remote_branch_exists(git_dir: &Path, branch: &str) -> bool {
         ])
         .status()
         .expect("run git show-ref for bare repo")
+        .success()
+}
+
+fn ref_contains_path(cwd: &Path, reference: &str, path: &str) -> bool {
+    Command::new("git")
+        .current_dir(cwd)
+        .args(["cat-file", "-e", &format!("{reference}:{path}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("run git cat-file")
         .success()
 }
 
