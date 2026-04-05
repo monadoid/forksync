@@ -215,6 +215,139 @@ The CLI must remain a thin shell over a reusable library API. The core engine mu
 - GitHub Action wrappers
 - future hosted workers
 
+## User Flow
+
+The primary user journey in v1 should be optimized for a fork-first, almost-no-config setup.
+
+### Happy path: real user journey
+
+1. A user is browsing GitHub and finds a repo they want to fork.
+2. They click Fork on GitHub.
+3. They clone their fork locally and open it in their editor or agent environment.
+4. In the repo root, they run `forksync init`.
+5. ForkSync attempts zero-config setup using defaults:
+   - detect the upstream parent repo
+   - detect the upstream default branch
+   - assume output branch `main`
+   - assume patch branch `forksync/patches`
+   - assume live branch `forksync/live`
+   - assume validation mode `none`
+   - assume GitHub workflow installation is desired
+6. ForkSync writes `.forksync.yml`.
+7. ForkSync writes a GitHub Actions workflow file under `.github/workflows/`.
+8. ForkSync creates or updates the local branches needed for management:
+   - `forksync/patches`
+   - `forksync/live`
+9. ForkSync optionally performs an initial local sync preview or initial sync, depending on the command mode.
+10. The user reviews the generated config and workflow.
+11. The user commits the generated files to their fork and pushes.
+12. From that point on, GitHub Actions keeps the fork current on schedule and via manual dispatch.
+
+### No-config goal
+
+The no-config experience should be:
+
+- clone fork
+- run `forksync init`
+- review generated files
+- commit
+- push
+
+That is the UX bar to optimize for.
+
+### What `forksync init` must do in v1
+
+`forksync init` is the product entrypoint. It should:
+
+- verify the current directory is a Git repo
+- inspect `origin` and infer that the current repo is a fork when possible
+- detect upstream repo and default branch when possible
+- fall back to explicit flags only when detection fails
+- generate a complete `.forksync.yml` from typed defaults
+- generate the GitHub workflow file
+- create local management branches if missing
+- offer or perform an initial sync path
+- print the exact next steps for the user
+
+### What the user should see after `forksync init`
+
+The user should be able to understand ForkSync from the created artifacts alone:
+
+- `.forksync.yml` explains what branches and policies are in play
+- `.github/workflows/forksync.yml` shows when sync runs
+- `forksync/patches` is where the user keeps their custom changes
+- `forksync/live` is the machine-generated result
+- `main` stays current automatically unless configured otherwise
+
+### Local user experience before pushing
+
+Before trusting GitHub Actions, a user should be able to test ForkSync locally:
+
+1. Clone their fork.
+2. Run `forksync init`.
+3. Make a custom change on `forksync/patches`.
+4. Simulate upstream movement locally or point to a real upstream remote.
+5. Run `forksync sync --trigger local-debug`.
+6. Inspect:
+   - resulting branch tips
+   - generated state files
+   - validation behavior
+   - success or failure summaries
+
+This local debug flow is the first dogfood milestone. GitHub Actions comes after the local experience is understandable.
+
+## Path to First Local Dogfood Experience
+
+The implementation plan should optimize for the earliest moment when you can personally act like a user on your laptop and see the whole system behave.
+
+### Milestone 1: zero-config setup in a real fork clone
+
+The first local user-visible milestone is:
+
+- open a forked repo locally
+- run `forksync init`
+- see `.forksync.yml`
+- see `.github/workflows/forksync.yml`
+- see `forksync/patches`
+- see `forksync/live`
+
+This milestone does not require full sync behavior yet. It proves the setup UX.
+
+### Milestone 2: local sync on synthetic repos
+
+The next milestone is:
+
+- generate temp upstream and fork repos in tests
+- create patch commits
+- simulate upstream movement
+- run `forksync sync --trigger local-debug`
+- assert `forksync/live`, output branch, and state behavior
+
+This proves the deterministic engine before GitHub is involved.
+
+### Milestone 3: local manual dogfood on a real fork
+
+The next milestone is:
+
+- use a real fork clone in `sandbox/repos/`
+- run `forksync init`
+- create a real patch on `forksync/patches`
+- point at a real or simulated upstream
+- run local sync repeatedly
+- inspect the result as a user would
+
+This is the milestone where the product becomes understandable in practice.
+
+### Milestone 4: workflow smoke test
+
+Only after the above should we validate:
+
+- generated workflow wiring with `act`
+- workflow environment behavior
+- permissions assumptions
+
+This keeps GitHub Actions validation downstream of the real engine and setup experience.
+
 ## Proposed Repository Layout
 
 ```text
@@ -314,18 +447,22 @@ Definition of done for a feature:
   - [ ] no-validation fixture template
 - [ ] TDD scope
   - [ ] Integration tests drive all Git orchestration APIs
+  - [ ] Integration tests prove the local-debug user flow
 
 ### PR 3: Init Flow and Branch Bootstrap
 
 - [ ] Implement `forksync init`
   - [ ] Upstream detection hooks
   - [ ] Config generation
+  - [ ] zero-config default path from a forked repo
   - [ ] Branch creation for `forksync/patches`
   - [ ] Branch creation for `forksync/live`
-  - [ ] Optional workflow installation hooks
+  - [ ] GitHub workflow file generation and installation
+  - [ ] user-facing next-step output
 - [ ] TDD scope
   - [ ] Unit tests for init defaults
   - [ ] Integration tests for branch bootstrap in synthetic repos
+  - [ ] Integration tests for zero-config init from a simulated fork clone
   - [ ] Failure tests for missing upstream data
 
 ### PR 4: State Persistence and Run History
@@ -416,6 +553,38 @@ Definition of done for a feature:
   - [ ] Golden tests for workflow YAML generation
   - [ ] Local `act` smoke validation
 
+## TDD Plan to Reach a Real Local Demo
+
+To reach the first local user-testable experience, implementation should proceed in this order:
+
+1. Write failing tests for `forksync init` default config generation from a simulated fork clone.
+2. Implement only enough config and detection logic to generate `.forksync.yml`.
+3. Write failing tests for workflow file generation.
+4. Implement only enough workflow generation to emit `.github/workflows/forksync.yml`.
+5. Write failing tests for creating `forksync/patches` and `forksync/live`.
+6. Implement only enough branch bootstrap logic to make those tests pass.
+7. Run the setup flow manually in a sandbox clone and document the observed UX gaps.
+8. Write failing tests for local patch replay sync using temp repos.
+9. Implement deterministic sync behavior until local-debug sync works.
+10. Add `act` only after the local CLI flow is understandable end to end.
+
+The critical rule is that each visible user step must be backed by a failing test before we add the behavior.
+
+## First Local Demo Script
+
+Once the setup and local sync paths exist, the first manual demo should look like this:
+
+1. Fork a public GitHub repo.
+2. Clone the fork into `sandbox/repos/<name>`.
+3. Run `forksync init`.
+4. Review `.forksync.yml` and `.github/workflows/forksync.yml`.
+5. Commit the generated files.
+6. Create a change on `forksync/patches`.
+7. Simulate an upstream change.
+8. Run `forksync sync --trigger local-debug`.
+9. Inspect `forksync/live`, `main`, and `.forksync/state`.
+10. Repeat with a conflict scenario.
+
 ### PR 11: Agent Abstraction and Stub Provider
 
 - [ ] Implement `forksync-agent`
@@ -492,6 +661,7 @@ Definition of done for a feature:
 ## Non-MVP / Planned but Not in v1
 
 - [ ] hosted event-driven sync mode via GitHub App or relay
+- [ ] support for GitLab and other forge providers beyond GitHub
 - [ ] deterministic auto-detection of build, test, and install commands
 - [ ] richer validation profiles
 - [ ] patch registry for publishing reusable patch layers
