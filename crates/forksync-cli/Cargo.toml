@@ -8,7 +8,16 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+forksync-agent = { path = "../forksync-agent" }
 forksync-config = { path = "../forksync-config" }
+forksync-engine = { path = "../forksync-engine" }
+forksync-git = { path = "../forksync-git" }
+forksync-github = { path = "../forksync-github" }
+forksync-state = { path = "../forksync-state" }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

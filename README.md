@@ -14,11 +14,12 @@ This repository README is the coordination file for the project. It captures the
   - [x] `.gitignore` added
   - [x] `AGENTS.md` symlinked to `README.md`
   - [x] Sandbox and fixture directories created
-  - [x] Developer script entrypoints stubbed
+  - [x] Developer script entrypoints created
   - [x] Git repository initialized
   - [x] Rust workspace scaffold created
   - [x] First crate manifests created
   - [x] First schema-first tests written
+  - [x] First local dogfood slice works end to end
 
 ## Product Statement
 
@@ -238,9 +239,9 @@ The primary user journey in v1 should be optimized for a fork-first, almost-no-c
 8. ForkSync creates or updates the local branches needed for management:
    - `forksync/patches`
    - `forksync/live`
-9. ForkSync optionally performs an initial local sync preview or initial sync, depending on the command mode.
+9. ForkSync checks out `forksync/patches` so generated files and future customizations live in the patch layer.
 10. The user reviews the generated config and workflow.
-11. The user commits the generated files to their fork and pushes.
+11. The user commits the generated files on `forksync/patches` and pushes.
 12. From that point on, GitHub Actions keeps the fork current on schedule and via manual dispatch.
 
 ### No-config goal
@@ -250,7 +251,7 @@ The no-config experience should be:
 - clone fork
 - run `forksync init`
 - review generated files
-- commit
+- commit them on `forksync/patches`
 - push
 
 That is the UX bar to optimize for.
@@ -266,7 +267,7 @@ That is the UX bar to optimize for.
 - generate a complete `.forksync.yml` from typed defaults
 - generate the GitHub workflow file
 - create local management branches if missing
-- offer or perform an initial sync path
+- leave the user on `forksync/patches`
 - print the exact next steps for the user
 
 ### What the user should see after `forksync init`
@@ -406,8 +407,8 @@ Definition of done for a feature:
 - [x] Add `.gitignore`
 - [x] Add `AGENTS.md` symlink to `README.md`
 - [x] Add developer scripts stubs
-- [ ] Create Rust workspace manifest
-- [ ] Add placeholder crate manifests
+- [x] Create Rust workspace manifest
+- [x] Add placeholder crate manifests
 
 ### PR 1: Workspace and Typed Config Skeleton
 
@@ -432,51 +433,51 @@ Definition of done for a feature:
 
 ### PR 2: Local Git Harness and Repo Factories
 
-- [ ] Implement `forksync-git` foundations
-  - [ ] Thin wrappers around Git command orchestration
-  - [ ] Repository discovery and remote helpers
-  - [ ] Branch creation and reset helpers
-- [ ] Build test harness support
-  - [ ] Temp repo factory utilities
-  - [ ] Commit helper APIs
-  - [ ] Remote wiring helpers
-  - [ ] Branch assertion helpers
+- [x] Implement `forksync-git` foundations
+  - [x] Thin wrappers around Git command orchestration
+  - [x] Repository discovery and remote helpers
+  - [x] Branch creation and reset helpers
+- [x] Build test harness support
+  - [x] Temp repo factory utilities
+  - [x] Commit helper APIs
+  - [x] Remote wiring helpers
+  - [x] Branch assertion helpers
 - [ ] Add initial integration scenarios
-  - [ ] no-conflict sync fixture template
+  - [x] no-conflict sync fixture template
   - [ ] textual conflict fixture template
-  - [ ] no-validation fixture template
-- [ ] TDD scope
-  - [ ] Integration tests drive all Git orchestration APIs
-  - [ ] Integration tests prove the local-debug user flow
+  - [x] no-validation fixture template
+- [x] TDD scope
+  - [x] Integration tests drive core Git orchestration APIs
+  - [x] Integration tests prove the local-debug user flow
 
 ### PR 3: Init Flow and Branch Bootstrap
 
-- [ ] Implement `forksync init`
-  - [ ] Upstream detection hooks
-  - [ ] Config generation
-  - [ ] zero-config default path from a forked repo
-  - [ ] Branch creation for `forksync/patches`
-  - [ ] Branch creation for `forksync/live`
-  - [ ] GitHub workflow file generation and installation
-  - [ ] user-facing next-step output
+- [x] Implement `forksync init`
+  - [x] Upstream detection hooks
+  - [x] Config generation
+  - [x] zero-config default path from a forked repo
+  - [x] Branch creation for `forksync/patches`
+  - [x] Branch creation for `forksync/live`
+  - [x] GitHub workflow file generation and installation
+  - [x] user-facing next-step output
 - [ ] TDD scope
   - [ ] Unit tests for init defaults
-  - [ ] Integration tests for branch bootstrap in synthetic repos
-  - [ ] Integration tests for zero-config init from a simulated fork clone
+  - [x] Integration tests for branch bootstrap in synthetic repos
+  - [x] Integration tests for zero-config init from a simulated fork clone
   - [ ] Failure tests for missing upstream data
 
 ### PR 4: State Persistence and Run History
 
-- [ ] Implement `forksync-state`
-  - [ ] State directory layout
-  - [ ] Last processed upstream SHA
-  - [ ] Last good sync SHA
-  - [ ] Patch base SHA
-  - [ ] Run history with max-entry trimming
+- [x] Implement `forksync-state`
+  - [x] State directory layout
+  - [x] Last processed upstream SHA
+  - [x] Last good sync SHA
+  - [x] Patch base SHA
+  - [x] Run history persistence
 - [ ] TDD scope
-  - [ ] Unit tests for serialization
+  - [x] Unit tests for serialization
   - [ ] Unit tests for trimming and overwrite semantics
-  - [ ] Integration tests for state persistence across sync runs
+  - [x] Integration tests for state persistence across sync runs
 
 ### PR 5: Patch Derivation
 
@@ -491,16 +492,16 @@ Definition of done for a feature:
 
 ### PR 6: Deterministic Sync Engine
 
-- [ ] Implement `forksync-engine` sync pipeline
-  - [ ] Fetch
-  - [ ] Upstream SHA resolution
-  - [ ] candidate branch creation
-  - [ ] patch replay
-  - [ ] success and failure outcomes
-- [ ] Implement `SyncOutcome`
+- [x] Implement `forksync-engine` sync pipeline
+  - [x] Fetch
+  - [x] Upstream SHA resolution
+  - [x] candidate branch creation
+  - [x] patch replay
+  - [x] success and failure outcomes
+- [x] Implement `SyncOutcome`
 - [ ] TDD scope
   - [ ] no-change scenario
-  - [ ] clean replay scenario
+  - [x] clean replay scenario
   - [ ] replay conflict scenario before agent handoff
   - [ ] auth failure scenario
   - [ ] infra failure scenario
@@ -541,16 +542,16 @@ Definition of done for a feature:
 
 ### PR 10: Workflow Generator and GitHub Action Wiring
 
-- [ ] Implement workflow generation
-  - [ ] schedule trigger
-  - [ ] workflow_dispatch trigger
-  - [ ] permissions block
-  - [ ] concurrency group
-  - [ ] CLI invocation
-- [ ] Add `.github/workflows/` templates or generated outputs
+- [x] Implement workflow generation
+  - [x] schedule trigger
+  - [x] workflow_dispatch trigger
+  - [x] permissions block
+  - [x] concurrency group
+  - [x] CLI invocation placeholder
+- [x] Add generated workflow outputs
 - [ ] Add `scripts/run_act.sh`
 - [ ] TDD scope
-  - [ ] Golden tests for workflow YAML generation
+  - [x] Workflow generation tests
   - [ ] Local `act` smoke validation
 
 ## TDD Plan to Reach a Real Local Demo
@@ -609,50 +610,50 @@ Once the setup and local sync paths exist, the first manual demo should look lik
 
 ## Detailed Build Checklist
 
-- [ ] Workspace foundation
-  - [ ] Root `Cargo.toml`
-  - [ ] Common toolchain settings
-  - [ ] Common lint settings
-  - [ ] Common test entrypoints
+- [x] Workspace foundation
+  - [x] Root `Cargo.toml`
+  - [x] Common toolchain settings
+  - [x] Common lint settings
+  - [x] Common test entrypoints
 - [ ] Crates
-  - [ ] `forksync-cli`
-  - [ ] `forksync-config`
-  - [ ] `forksync-engine`
-  - [ ] `forksync-git`
-  - [ ] `forksync-agent`
-  - [ ] `forksync-github`
-  - [ ] `forksync-state`
+  - [x] `forksync-cli`
+  - [x] `forksync-config`
+  - [x] `forksync-engine`
+  - [x] `forksync-git`
+  - [x] `forksync-agent`
+  - [x] `forksync-github`
+  - [x] `forksync-state`
 - [ ] Commands
-  - [ ] `init`
-  - [ ] `sync`
-  - [ ] `validate`
-  - [ ] `print-config`
-  - [ ] `generate-workflow`
-  - [ ] `status`
-  - [ ] `rollback`
-  - [ ] `registry` placeholders
+  - [x] `init`
+  - [x] `sync`
+  - [x] `validate`
+  - [x] `print-config`
+  - [x] `generate-workflow`
+  - [x] `status`
+  - [x] `rollback` placeholders
+  - [x] `registry` placeholders
 - [ ] Sync behavior
-  - [ ] effective default resolution
+  - [x] effective default resolution
   - [ ] concurrency lock
-  - [ ] upstream fetch
-  - [ ] dedupe by upstream SHA
-  - [ ] candidate branch creation
-  - [ ] patch derivation from recorded patch base
-  - [ ] patch replay
+  - [x] upstream fetch
+  - [x] dedupe by upstream SHA
+  - [x] candidate branch creation
+  - [x] patch derivation from recorded patch base
+  - [x] patch replay
   - [ ] agent repair path
   - [ ] validation path
-  - [ ] live branch update
-  - [ ] output branch update
-  - [ ] state persistence
+  - [x] live branch update
+  - [x] output branch update
+  - [x] state persistence
 - [ ] Failure handling
   - [ ] standing failure branch policy
   - [ ] standing failure PR reuse
   - [ ] structured summary generation
   - [ ] artifact/log hooks
 - [ ] Test coverage
-  - [ ] unit tests for config
-  - [ ] unit tests for state
-  - [ ] integration tests for Git flows
+  - [x] unit tests for config
+  - [x] unit tests for state
+  - [x] integration tests for Git flows
   - [ ] integration tests for conflict handling
   - [ ] integration tests for validation failure
   - [ ] integration tests for auth failure
@@ -677,10 +678,10 @@ Once the setup and local sync paths exist, the first manual demo should look lik
 
 These are expected in the next implementation PR:
 
-- first integration harness support under `tests/integration/`
-- initial workflow generation tests
-- first temp-repo factory helpers
-- first state persistence tests
+- replay conflict coverage and human-review path
+- validation runner beyond `validation.mode = none`
+- local no-change sync coverage
+- improved workflow execution via `act`
 
 ## Notes for Contributors and Builder Agents
 

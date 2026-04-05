@@ -1,0 +1,267 @@
+use forksync_config::load_from_path;
+use forksync_state::{FileStateStore, StateStore};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use tempfile::TempDir;
+
+struct LocalForkFixture {
+    _temp: TempDir,
+    upstream_working: PathBuf,
+    upstream_remote: PathBuf,
+    user_repo: PathBuf,
+}
+
+#[test]
+fn init_creates_generated_files_state_and_branches() {
+    let fixture = create_local_fork_fixture();
+
+    let output = run_cli(&fixture.user_repo, ["init"]);
+    assert!(
+        output.status.success(),
+        "init failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let config_path = fixture.user_repo.join(".forksync.yml");
+    let workflow_path = fixture.user_repo.join(".github/workflows/forksync.yml");
+    let state_path = fixture.user_repo.join(".forksync/state/state.yml");
+
+    assert!(config_path.exists(), "expected config file to exist");
+    assert!(workflow_path.exists(), "expected workflow file to exist");
+    assert!(state_path.exists(), "expected state file to exist");
+
+    let config = load_from_path(&config_path).expect("load generated config");
+    assert_eq!(config.upstream.remote_name, "upstream");
+    assert_eq!(config.upstream.branch, "main");
+    assert_eq!(config.branches.patch, "forksync/patches");
+    assert_eq!(config.branches.live, "forksync/live");
+    assert_eq!(config.branches.output, "main");
+
+    let current_branch = git_output(&fixture.user_repo, ["branch", "--show-current"]);
+    assert_eq!(current_branch, "forksync/patches");
+    assert!(local_branch_exists(&fixture.user_repo, "forksync/patches"));
+    assert!(local_branch_exists(&fixture.user_repo, "forksync/live"));
+
+    let state = FileStateStore::new(state_path)
+        .load()
+        .expect("load persisted state");
+    assert!(
+        state.patch_base_sha.is_some(),
+        "expected patch base sha to be recorded"
+    );
+}
+
+#[test]
+fn sync_replays_patch_branch_onto_updated_upstream() {
+    let fixture = create_local_fork_fixture();
+
+    let init_output = run_cli(&fixture.user_repo, ["init"]);
+    assert!(
+        init_output.status.success(),
+        "init failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&init_output.stdout),
+        String::from_utf8_lossy(&init_output.stderr)
+    );
+
+    git(
+        &fixture.user_repo,
+        [
+            "add",
+            ".forksync.yml",
+            ".github/workflows/forksync.yml",
+            ".gitignore",
+        ],
+    );
+    git(
+        &fixture.user_repo,
+        ["commit", "-m", "Add ForkSync bootstrap"],
+    );
+
+    fs::write(fixture.user_repo.join("PATCH.txt"), "local patch\n").expect("write patch file");
+    git(&fixture.user_repo, ["add", "PATCH.txt"]);
+    git(&fixture.user_repo, ["commit", "-m", "Add local patch"]);
+
+    fs::write(
+        fixture.upstream_working.join("UPSTREAM.txt"),
+        "upstream change\n",
+    )
+    .expect("write upstream file");
+    git(&fixture.upstream_working, ["add", "UPSTREAM.txt"]);
+    git(
+        &fixture.upstream_working,
+        ["commit", "-m", "Add upstream change"],
+    );
+    git(
+        &fixture.upstream_working,
+        [
+            "push",
+            fixture.upstream_remote.to_str().expect("utf-8 path"),
+            "main",
+        ],
+    );
+
+    let sync_output = run_cli(
+        &fixture.user_repo,
+        ["sync", "--trigger", "local-debug", "--no-agent"],
+    );
+    assert!(
+        sync_output.status.success(),
+        "sync failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&sync_output.stdout),
+        String::from_utf8_lossy(&sync_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&sync_output.stdout);
+    assert!(stdout.contains("SyncedDeterministic"));
+
+    let main_patch = git_output(&fixture.user_repo, ["show", "main:PATCH.txt"]);
+    let main_upstream = git_output(&fixture.user_repo, ["show", "main:UPSTREAM.txt"]);
+    let live_patch = git_output(&fixture.user_repo, ["show", "forksync/live:PATCH.txt"]);
+    let live_upstream = git_output(&fixture.user_repo, ["show", "forksync/live:UPSTREAM.txt"]);
+    let main_config = git_output(&fixture.user_repo, ["show", "main:.forksync.yml"]);
+
+    assert_eq!(main_patch, "local patch");
+    assert_eq!(main_upstream, "upstream change");
+    assert_eq!(live_patch, "local patch");
+    assert_eq!(live_upstream, "upstream change");
+    assert!(main_config.contains("forksync/patches"));
+
+    let state = FileStateStore::new(fixture.user_repo.join(".forksync/state/state.yml"))
+        .load()
+        .expect("load state after sync");
+    assert!(
+        state.last_processed_upstream_sha.is_some(),
+        "expected last processed upstream sha to be populated"
+    );
+    assert!(
+        state.last_good_sync_sha.is_some(),
+        "expected last good sync sha to be populated"
+    );
+}
+
+fn create_local_fork_fixture() -> LocalForkFixture {
+    let temp = TempDir::new().expect("create tempdir");
+    let upstream_working = temp.path().join("upstream-working");
+    let upstream_remote = temp.path().join("upstream-remote.git");
+    let fork_remote = temp.path().join("fork-remote.git");
+    let user_repo = temp.path().join("user-repo");
+
+    fs::create_dir_all(&upstream_working).expect("create upstream working dir");
+    git(&upstream_working, ["init", "-b", "main"]);
+    git(&upstream_working, ["config", "user.name", "ForkSync Test"]);
+    git(
+        &upstream_working,
+        ["config", "user.email", "forksync-test@example.com"],
+    );
+    fs::write(upstream_working.join("README.md"), "seed repo\n").expect("write seed readme");
+    git(&upstream_working, ["add", "README.md"]);
+    git(
+        &upstream_working,
+        ["commit", "-m", "Initial upstream commit"],
+    );
+
+    git(
+        temp.path(),
+        [
+            "clone",
+            "--bare",
+            upstream_working.to_str().expect("utf-8 path"),
+            upstream_remote.to_str().expect("utf-8 path"),
+        ],
+    );
+    git(
+        temp.path(),
+        [
+            "clone",
+            "--bare",
+            upstream_working.to_str().expect("utf-8 path"),
+            fork_remote.to_str().expect("utf-8 path"),
+        ],
+    );
+    git(
+        temp.path(),
+        [
+            "clone",
+            fork_remote.to_str().expect("utf-8 path"),
+            user_repo.to_str().expect("utf-8 path"),
+        ],
+    );
+    git(&user_repo, ["config", "user.name", "ForkSync Test"]);
+    git(
+        &user_repo,
+        ["config", "user.email", "forksync-test@example.com"],
+    );
+    git(
+        &user_repo,
+        [
+            "remote",
+            "add",
+            "upstream",
+            upstream_remote.to_str().expect("utf-8 path"),
+        ],
+    );
+    git(&user_repo, ["fetch", "upstream"]);
+
+    LocalForkFixture {
+        _temp: temp,
+        upstream_working,
+        upstream_remote,
+        user_repo,
+    }
+}
+
+fn run_cli<const N: usize>(cwd: &Path, args: [&str; N]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_forksync-cli"))
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .expect("run forksync cli")
+}
+
+fn git<const N: usize>(cwd: &Path, args: [&str; N]) {
+    let output = Command::new("git")
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .expect("run git command");
+    assert!(
+        output.status.success(),
+        "git command failed in {}\nargs: {:?}\nstdout:\n{}\nstderr:\n{}",
+        cwd.display(),
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn git_output<const N: usize>(cwd: &Path, args: [&str; N]) -> String {
+    let output = Command::new("git")
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .expect("run git command");
+    assert!(
+        output.status.success(),
+        "git command failed in {}\nargs: {:?}\nstdout:\n{}\nstderr:\n{}",
+        cwd.display(),
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn local_branch_exists(cwd: &Path, branch: &str) -> bool {
+    Command::new("git")
+        .current_dir(cwd)
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
+        .status()
+        .expect("run git show-ref")
+        .success()
+}

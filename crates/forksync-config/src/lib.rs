@@ -1,6 +1,47 @@
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use thiserror::Error;
+
+pub const DEFAULT_CONFIG_PATH: &str = ".forksync.yml";
+pub const DEFAULT_WORKFLOW_PATH: &str = ".github/workflows/forksync.yml";
+pub const DEFAULT_STATE_FILE: &str = "state.yml";
+
+#[derive(Debug, Error)]
+pub enum ConfigIoError {
+    #[error("failed to read config at {path}: {source}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to parse config at {path}: {source}")]
+    Parse {
+        path: PathBuf,
+        #[source]
+        source: serde_yaml::Error,
+    },
+    #[error("failed to create parent directory for {path}: {source}")]
+    CreateParentDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to serialize config for {path}: {source}")]
+    Serialize {
+        path: PathBuf,
+        #[source]
+        source: serde_yaml::Error,
+    },
+    #[error("failed to write config to {path}: {source}")]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -42,12 +83,54 @@ impl Default for RepoConfig {
     }
 }
 
+impl RepoConfig {
+    pub fn for_init(upstream_repo: impl Into<String>, upstream_branch: impl Into<String>) -> Self {
+        let mut config = Self::default();
+        config.upstream.repo = upstream_repo.into();
+        config.upstream.branch = upstream_branch.into();
+        config
+    }
+}
+
 pub fn from_yaml_str(input: &str) -> Result<RepoConfig, serde_yaml::Error> {
     serde_yaml::from_str(input)
 }
 
 pub fn to_yaml_string(config: &RepoConfig) -> Result<String, serde_yaml::Error> {
     serde_yaml::to_string(config)
+}
+
+pub fn load_from_path(path: impl AsRef<Path>) -> Result<RepoConfig, ConfigIoError> {
+    let path = path.as_ref();
+    let contents = fs::read_to_string(path).map_err(|source| ConfigIoError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    from_yaml_str(&contents).map_err(|source| ConfigIoError::Parse {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+pub fn write_to_path(path: impl AsRef<Path>, config: &RepoConfig) -> Result<(), ConfigIoError> {
+    let path = path.as_ref();
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| ConfigIoError::CreateParentDir {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    }
+
+    let rendered = to_yaml_string(config).map_err(|source| ConfigIoError::Serialize {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    fs::write(path, rendered).map_err(|source| ConfigIoError::Write {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
