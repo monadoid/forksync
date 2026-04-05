@@ -12,13 +12,13 @@ This repository README is the coordination file for the project. It captures the
   - [x] Local testing strategy defined
   - [x] PR breakdown defined
   - [x] `.gitignore` added
-- [x] `AGENTS.md` symlinked to `README.md`
-- [x] Sandbox and fixture directories created
-- [x] Developer script entrypoints stubbed
-- [x] Git repository initialized
-- [x] Rust workspace scaffold created
-- [x] First crate manifests created
-- [x] First schema-first tests written
+  - [x] `AGENTS.md` symlinked to `README.md`
+  - [x] Sandbox and fixture directories created
+  - [x] Developer script entrypoints stubbed
+  - [x] Git repository initialized
+  - [x] Rust workspace scaffold created
+  - [x] First crate manifests created
+  - [x] First schema-first tests written
 
 ## Product Statement
 
