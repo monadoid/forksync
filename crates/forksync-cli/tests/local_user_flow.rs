@@ -246,6 +246,26 @@ fn sync_replays_main_commits_onto_updated_upstream() {
     );
 }
 
+#[test]
+fn sync_from_uninitialized_directory_shows_init_hint() {
+    let temp = TempDir::new().expect("create tempdir");
+
+    let output = run_cli(
+        temp.path(),
+        ["sync", "--trigger", "local-debug", "--no-agent"],
+    );
+    assert!(
+        !output.status.success(),
+        "sync unexpectedly succeeded:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no ForkSync config found at"));
+    assert!(stderr.contains("Run `forksync init` from the fork repo root first"));
+}
+
 fn create_local_fork_fixture() -> LocalForkFixture {
     let temp = TempDir::new().expect("create tempdir");
     let upstream_working = temp.path().join("upstream-working");

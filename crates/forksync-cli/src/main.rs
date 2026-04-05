@@ -2,8 +2,8 @@ use anyhow::{Context, Result, anyhow};
 use clap::{ArgAction, Args, Parser, Subcommand};
 use forksync_agent::OpenCodeFactory;
 use forksync_config::{
-    DEFAULT_CONFIG_PATH, DEFAULT_WORKFLOW_PATH, RepoConfig, RunnerPreset, TriggerSource,
-    load_from_path, to_yaml_string,
+    ConfigIoError, DEFAULT_CONFIG_PATH, DEFAULT_WORKFLOW_PATH, RepoConfig, RunnerPreset,
+    TriggerSource, load_from_path, to_yaml_string,
 };
 use forksync_engine::{InitRequest, SyncEngine, SyncRequest, default_state_file_path};
 use forksync_git::{GitBackend, SystemGitBackend};
@@ -238,7 +238,7 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
 }
 
 fn run_sync(repo_path: &Path, config_path: &Path, args: SyncArgs) -> Result<()> {
-    let config = load_from_path(config_path)?;
+    let config = load_repo_config(config_path)?;
     let workflow_path = repo_path.join(DEFAULT_WORKFLOW_PATH);
     let state_path = default_state_file_path(repo_path, &config);
     let engine = SyncEngine::new(
@@ -274,7 +274,7 @@ fn run_sync(repo_path: &Path, config_path: &Path, args: SyncArgs) -> Result<()> 
 }
 
 fn run_validate(repo_path: &Path, config_path: &Path, args: ValidateArgs) -> Result<()> {
-    let _config = load_from_path(config_path)?;
+    let _config = load_repo_config(config_path)?;
     if args.git_state {
         SystemGitBackend.ensure_repo(repo_path)?;
     }
@@ -283,7 +283,7 @@ fn run_validate(repo_path: &Path, config_path: &Path, args: ValidateArgs) -> Res
 }
 
 fn run_print_config(config_path: &Path, args: PrintConfigArgs) -> Result<()> {
-    let config = load_from_path(config_path)?;
+    let config = load_repo_config(config_path)?;
     if args.json {
         println!(
             "{}",
@@ -303,7 +303,7 @@ fn run_generate_workflow(
     config_path: &Path,
     args: GenerateWorkflowArgs,
 ) -> Result<()> {
-    let config = load_from_path(config_path)?;
+    let config = load_repo_config(config_path)?;
     let workflow = generate_sync_workflow(&config);
     let workflow_path = repo_path.join(&workflow.path);
 
@@ -326,7 +326,7 @@ fn run_generate_workflow(
 }
 
 fn run_status(repo_path: &Path, config_path: &Path, args: StatusArgs) -> Result<()> {
-    let config = load_from_path(config_path)?;
+    let config = load_repo_config(config_path)?;
     let state_path = default_state_file_path(repo_path, &config);
     let state = FileStateStore::new(state_path.clone()).load()?;
 
@@ -360,5 +360,20 @@ fn resolve_path(repo_path: &Path, configured: &Path) -> PathBuf {
         configured.to_path_buf()
     } else {
         repo_path.join(configured)
+    }
+}
+
+fn load_repo_config(config_path: &Path) -> Result<RepoConfig> {
+    match load_from_path(config_path) {
+        Ok(config) => Ok(config),
+        Err(ConfigIoError::Read { path, source })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Err(anyhow!(
+                "no ForkSync config found at {}. Run `forksync init` from the fork repo root first, or pass `--config` to point at an existing config file.",
+                path.display()
+            ))
+        }
+        Err(error) => Err(error.into()),
     }
 }

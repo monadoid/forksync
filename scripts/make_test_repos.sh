@@ -45,6 +45,9 @@ git -C "$UPSTREAM_WORKING" add README.md
 git -C "$UPSTREAM_WORKING" commit -m "Initial upstream commit" >/dev/null
 
 git clone --bare "$UPSTREAM_WORKING" "$UPSTREAM_REMOTE" >/dev/null
+git -C "$UPSTREAM_WORKING" remote add origin "$UPSTREAM_REMOTE"
+git -C "$UPSTREAM_WORKING" fetch origin >/dev/null
+git -C "$UPSTREAM_WORKING" branch --set-upstream-to=origin/main main >/dev/null
 git clone --bare "$UPSTREAM_WORKING" "$FORK_REMOTE" >/dev/null
 git clone "$FORK_REMOTE" "$USER_REPO" >/dev/null
 git -C "$USER_REPO" config user.name "ForkSync Demo"
@@ -71,7 +74,7 @@ Suggested local dogfood flow:
   6. echo "upstream change" > "$UPSTREAM_WORKING/UPSTREAM.txt"
   7. git -C "$UPSTREAM_WORKING" add UPSTREAM.txt
   8. git -C "$UPSTREAM_WORKING" commit -m "Add upstream change"
-  9. git -C "$UPSTREAM_WORKING" push "$UPSTREAM_REMOTE" main
+  9. git -C "$UPSTREAM_WORKING" push
  10. forksync sync --trigger local-debug --no-agent
  11. git show main:PATCH.txt
  12. git show main:UPSTREAM.txt
@@ -79,9 +82,13 @@ Suggested local dogfood flow:
 Notes:
   - You can omit the argument entirely to recreate the default demo at:
       $ROOT_DIR/sandbox/repos/demo
+  - Re-running this script deletes and recreates that demo directory from scratch.
+    If you were already inside the old demo tree, `cd` back into the new one after it finishes.
   - Under the current ForkSync model, make your own code changes on:
       main
     ForkSync derives your local fork layer from commits on main since the last generated base.
   - ForkSync keeps the generated recovery/debug branch at:
       forksync/live
+  - Run forksync commands only from:
+      $USER_REPO
 EOF
