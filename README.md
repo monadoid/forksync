@@ -1,6 +1,6 @@
 # ForkSync
 
-ForkSync is a Git-first system for keeping small feature forks alive: fork early, patch locally, stay current automatically, and only bother a human when deterministic automation or bounded repair cannot finish the job.
+ForkSync is a Git-first system for keeping small feature forks alive: fork early, patch locally, stay current automatically, and rely on deterministic automation plus bounded agent repair instead of a manual review lane.
 
 This repository README is the coordination file for the project. It captures the v1 implementation plan, repository structure, TDD rules, delivery plan, and progress tracking.
 
@@ -53,6 +53,7 @@ The v1 product posture is:
 - [x] Failure handling reuses one PR
 - [x] Private upstream auth is PAT-first in v1
 - [x] OpenCode is the default v1 agent provider
+- [x] `opencode/gpt-5-nano` is the default v1 model
 - [x] Agent integration must remain swappable behind a stable abstraction seam
 - [x] TDD is mandatory for implementation work
 - [x] Local engine tests are the primary harness
@@ -65,7 +66,7 @@ The v1 product posture is:
 - sync should be deterministic first
 - agentic repair should only happen when deterministic replay breaks
 - green automation should push by default
-- human review is the exception path
+- agent failure is the exception path
 - everything user-facing is strongly typed and schema-driven
 - branch semantics must stay clean enough for future patch sharing and stacking
 
@@ -139,6 +140,8 @@ Agent defaults:
 
 - enabled
 - OpenCode provider by default
+- `opencode/gpt-5-nano` by default
+- built-in no-login OpenCode path by default when available
 - reckless prompt profile
 - bounded retries
 - bounded runtime
@@ -158,6 +161,7 @@ Agent design rules:
 - `OpenCode` is the first concrete adapter we wire up
 - provider selection belongs in typed config, even if v1 only fully exercises one provider
 - adding a second provider later should not require redesigning the engine pipeline
+- future hosted ForkSync agent mode should fit behind the same typed provider seam
 
 ## Authentication Model
 
@@ -687,6 +691,8 @@ Once the setup and local sync paths exist, the first manual demo should look lik
 - [ ] hosted event-driven sync mode via GitHub App or relay
 - [ ] support for GitLab and other forge providers beyond GitHub
 - [ ] user-friendly CLI distribution via npm, Homebrew, and cargo install flows
+- [ ] bring-your-own OpenCode provider credentials and model selection
+- [ ] hosted ForkSync agent mode with user login
 - [ ] deterministic auto-detection of build, test, and install commands
 - [ ] richer validation profiles
 - [ ] patch registry for publishing reusable patch layers
@@ -702,7 +708,7 @@ Once the setup and local sync paths exist, the first manual demo should look lik
 
 These are expected in the next implementation PR:
 
-- replay conflict coverage and human-review path
+- replay conflict coverage and agent failure path
 - validation runner beyond `validation.mode = none`
 - local no-change sync coverage
 - improved workflow execution via `act`

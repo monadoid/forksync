@@ -22,7 +22,7 @@ pub struct AgentRepairRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentRepairOutcome {
     Repaired,
-    NeedsHumanReview,
+    Failed,
     NoChange,
 }
 

@@ -221,7 +221,7 @@ impl Default for SyncConfig {
             poll_cron: "*/15 * * * *".to_string(),
             strategy: SyncStrategy::ReplayPatchStack,
             patch_derivation: PatchDerivationMode::SinceRecordedPatchBase,
-            conflict_strategy: ConflictStrategy::AgentThenPr,
+            conflict_strategy: ConflictStrategy::AgentRequired,
             update_output_branch: true,
             direct_push_on_green: true,
             reckless_mode_default: true,
@@ -299,8 +299,8 @@ impl Default for AgentConfig {
         Self {
             enabled: true,
             provider: AgentProvider::OpenCode,
-            model: None,
-            credential_mode: AgentCredentialMode::BringYourOwnKey,
+            model: Some("opencode/gpt-5-nano".to_string()),
+            credential_mode: AgentCredentialMode::None,
             api_key_secret_name: None,
             hosted_profile: None,
             max_attempts: 3,
@@ -639,9 +639,8 @@ pub enum PatchDerivationMode {
 #[serde(rename_all = "snake_case")]
 pub enum ConflictStrategy {
     #[default]
-    AgentThenPr,
-    PrOnly,
-    FailFast,
+    #[serde(alias = "agent_then_pr", alias = "pr_only", alias = "fail_fast")]
+    AgentRequired,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ValueEnum, Default)]
@@ -667,10 +666,10 @@ pub enum AgentProvider {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ValueEnum, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentCredentialMode {
-    HostedByForkSync,
     #[default]
-    BringYourOwnKey,
     None,
+    BringYourOwnKey,
+    HostedByForkSync,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ValueEnum, Default)]
@@ -729,6 +728,8 @@ mod tests {
         );
         assert_eq!(config.validation.mode, ValidationMode::None);
         assert_eq!(config.agent.provider, AgentProvider::OpenCode);
+        assert_eq!(config.agent.model.as_deref(), Some("opencode/gpt-5-nano"));
+        assert_eq!(config.agent.credential_mode, AgentCredentialMode::None);
         assert_eq!(config.agent.prompt_profile, PromptProfile::Reckless);
         assert_eq!(config.auth.upstream_auth.mode, UpstreamAuthMode::Anonymous);
         assert!(config.safety.allow_force_push_output_branch);
@@ -750,5 +751,16 @@ mod tests {
         assert_eq!(parsed.upstream.remote_name, "upstream");
         assert_eq!(parsed.validation.mode, ValidationMode::None);
         assert_eq!(parsed.agent.provider, AgentProvider::OpenCode);
+    }
+
+    #[test]
+    fn legacy_conflict_strategy_values_deserialize_to_agent_required() {
+        let parsed = from_yaml_str("version: 1\nsync:\n  conflict_strategy: agent_then_pr\n")
+            .expect("parse legacy conflict strategy");
+
+        assert_eq!(
+            parsed.sync.conflict_strategy,
+            ConflictStrategy::AgentRequired
+        );
     }
 }

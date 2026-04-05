@@ -29,10 +29,10 @@ pub enum RecordedOutcome {
     SyncedDeterministic,
     SyncedAgentic,
     FailedValidation,
+    #[serde(alias = "needs_human_review")]
     FailedAgent,
     FailedAuth,
     FailedInfra,
-    NeedsHumanReview,
 }
 
 #[derive(Debug, Error)]

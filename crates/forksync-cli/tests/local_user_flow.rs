@@ -247,6 +247,65 @@ fn sync_replays_main_commits_onto_updated_upstream() {
 }
 
 #[test]
+fn sync_conflict_reports_failed_agent_instead_of_human_review() {
+    let fixture = create_local_fork_fixture();
+
+    let init_output = run_cli(&fixture.user_repo, ["init"]);
+    assert!(
+        init_output.status.success(),
+        "init failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&init_output.stdout),
+        String::from_utf8_lossy(&init_output.stderr)
+    );
+
+    fs::write(
+        fixture.user_repo.join("README.md"),
+        "seed repo\nlocal change\n",
+    )
+    .expect("write local readme change");
+    git(&fixture.user_repo, ["add", "README.md"]);
+    git(&fixture.user_repo, ["commit", "-m", "Local readme change"]);
+
+    fs::write(
+        fixture.upstream_working.join("README.md"),
+        "seed repo\nupstream change\n",
+    )
+    .expect("write upstream readme change");
+    git(&fixture.upstream_working, ["add", "README.md"]);
+    git(
+        &fixture.upstream_working,
+        ["commit", "-m", "Upstream readme change"],
+    );
+    git(
+        &fixture.upstream_working,
+        [
+            "push",
+            fixture.upstream_remote.to_str().expect("utf-8 path"),
+            "main",
+        ],
+    );
+
+    let sync_output = run_cli(&fixture.user_repo, ["sync", "--trigger", "local-debug"]);
+    assert!(
+        sync_output.status.success(),
+        "sync failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&sync_output.stdout),
+        String::from_utf8_lossy(&sync_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&sync_output.stdout);
+    assert!(stdout.contains("FailedAgent"));
+    assert!(stdout.contains("agent repair failed to run"));
+
+    let state = FileStateStore::new(fixture.user_repo.join(".forksync/state/state.yml"))
+        .load()
+        .expect("load state after failed agent path");
+    assert_eq!(
+        state.history.last().map(|record| record.outcome),
+        Some(forksync_state::RecordedOutcome::FailedAgent)
+    );
+}
+
+#[test]
 fn sync_from_uninitialized_directory_shows_init_hint() {
     let temp = TempDir::new().expect("create tempdir");
 
