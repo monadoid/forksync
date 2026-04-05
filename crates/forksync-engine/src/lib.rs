@@ -1,7 +1,7 @@
 use forksync_agent::AgentFactory;
 use forksync_config::{
     ConfigIoError, DEFAULT_STATE_FILE, RepoConfig, RunnerPreset, TriggerSource, ValidationMode,
-    write_to_path,
+    load_from_path, write_to_path,
 };
 use forksync_git::{
     GitBackend, GitError, PatchDerivationRequest, RemoteSpec, ReplayRequest, ReplayStatus,
@@ -148,9 +148,7 @@ where
         self.git.ensure_repo(&request.repo_path)?;
 
         if !request.force && request.config_path.exists() {
-            return Err(EngineError::PathExists {
-                path: request.config_path.clone(),
-            });
+            return self.report_existing_init(request);
         }
 
         if !request.force && request.install_workflow && request.workflow_path.exists() {
@@ -327,11 +325,18 @@ where
             ));
         }
 
-        if current_ref == output_branch && worktree_clean {
-            notes.push(format!(
-                "You can keep working directly on {} now.",
-                output_branch
-            ));
+        if current_ref == output_branch {
+            if worktree_clean {
+                notes.push(format!(
+                    "You can keep working directly on {} now.",
+                    output_branch
+                ));
+            } else {
+                notes.push(format!(
+                    "You can keep working on {}. ForkSync left your existing local changes untouched.",
+                    output_branch
+                ));
+            }
         } else {
             notes.push(format!(
                 "When you are ready to start making custom fork changes, switch to {}.",
@@ -545,6 +550,33 @@ where
         Ok("origin".to_string())
     }
 
+    fn report_existing_init(&self, request: &InitRequest) -> Result<InitReport, EngineError> {
+        let config = load_from_path(&request.config_path)?;
+        let current_head = self.git.head_sha(&request.repo_path)?;
+        let state = self.state.load()?;
+        let bootstrap_commit_sha = state
+            .author_base_sha
+            .or(state.last_good_sync_sha)
+            .unwrap_or(current_head);
+
+        Ok(InitReport {
+            config_path: request.config_path.clone(),
+            workflow_path: request.workflow_path.exists().then(|| request.workflow_path.clone()),
+            upstream_remote: config.upstream.remote_name.clone(),
+            upstream_repo: config.upstream.repo.clone(),
+            upstream_branch: config.upstream.branch.clone(),
+            patch_branch: config.branches.patch.clone(),
+            live_branch: config.branches.live.clone(),
+            output_branch: config.branches.output.clone(),
+            bootstrap_commit_sha,
+            pushed_branches: Vec::new(),
+            notes: vec![
+                "ForkSync is already initialized in this repo. Nothing changed.".to_string(),
+                "Re-run `forksync init --force` if you need to regenerate managed files or repair the bootstrap state.".to_string(),
+            ],
+        })
+    }
+
     fn write_managed_commit(
         &self,
         repo_path: &Path,
@@ -575,6 +607,10 @@ where
             }
 
             ensure_forksync_gitignore_rules(&worktree_path)?;
+
+            if self.git.paths_clean(&worktree_path, &commit_paths)? {
+                return self.git.head_sha(&worktree_path).map_err(EngineError::from);
+            }
 
             self.git
                 .commit_paths(&worktree_path, &commit_paths, message)

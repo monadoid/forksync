@@ -69,6 +69,69 @@ fn init_bootstraps_main_for_direct_authoring() {
 }
 
 #[test]
+fn init_is_idempotent_when_repo_is_already_bootstrapped() {
+    let fixture = create_local_fork_fixture();
+
+    let first = run_cli(&fixture.user_repo, ["init"]);
+    assert!(
+        first.status.success(),
+        "first init failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let head_before = git_output(&fixture.user_repo, ["rev-parse", "HEAD"]);
+
+    let second = run_cli(&fixture.user_repo, ["init"]);
+    assert!(
+        second.status.success(),
+        "second init failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&second.stdout),
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&second.stdout);
+    assert!(stdout.contains("already initialized"));
+    assert_eq!(
+        git_output(&fixture.user_repo, ["rev-parse", "HEAD"]),
+        head_before
+    );
+}
+
+#[test]
+fn init_force_succeeds_when_repo_is_bootstrapped_and_main_has_unrelated_changes() {
+    let fixture = create_local_fork_fixture();
+
+    let first = run_cli(&fixture.user_repo, ["init"]);
+    assert!(
+        first.status.success(),
+        "first init failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    fs::write(fixture.user_repo.join("README.md"), "user local edit\n")
+        .expect("write unrelated local change");
+    let head_before = git_output(&fixture.user_repo, ["rev-parse", "HEAD"]);
+
+    let forced = run_cli(&fixture.user_repo, ["init", "--force"]);
+    assert!(
+        forced.status.success(),
+        "forced init failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&forced.stdout),
+        String::from_utf8_lossy(&forced.stderr)
+    );
+
+    assert_eq!(
+        git_output(&fixture.user_repo, ["branch", "--show-current"]),
+        "main"
+    );
+    assert!(git_output(&fixture.user_repo, ["status", "--short"]).contains("README.md"));
+    assert_eq!(
+        git_output(&fixture.user_repo, ["rev-parse", "HEAD"]),
+        head_before
+    );
+}
+
+#[test]
 fn init_keeps_dirty_feature_branch_checked_out() {
     let fixture = create_local_fork_fixture();
 

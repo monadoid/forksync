@@ -285,6 +285,7 @@ That is the UX bar to optimize for.
 - make local `main` ready for immediate authoring when it is safe to do so
 - attempt to push the managed refs to `origin`
 - otherwise leave the user's current branch untouched and explain how to return to `main`
+- be safe to rerun: no-op by default when already initialized, regenerate only with `--force`
 - tell the user to keep working on `main`
 - print the exact next steps for the user
 
