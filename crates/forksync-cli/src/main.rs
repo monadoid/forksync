@@ -193,9 +193,12 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
     })?;
 
     println!("Initialized ForkSync in {}", repo_path.display());
-    println!("Config: {}", report.config_path.display());
+    println!(
+        "Config path in bootstrap commit: {}",
+        report.config_path.display()
+    );
     if let Some(workflow) = report.workflow_path {
-        println!("Workflow: {}", workflow.display());
+        println!("Workflow path in bootstrap commit: {}", workflow.display());
     }
     println!(
         "Upstream: {} ({}) via remote {}",
@@ -205,18 +208,24 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
         "Branches: patch={}, live={}, output={}",
         report.patch_branch, report.live_branch, report.output_branch
     );
+    println!("Bootstrap commit: {}", report.bootstrap_commit_sha);
+    if !report.pushed_branches.is_empty() {
+        println!("Pushed: {}", report.pushed_branches.join(", "));
+    }
     for note in report.notes {
         println!("- {}", note);
     }
     println!("Next steps:");
     println!(
-        "1. Review {} and {} in your working tree.",
-        config_path.display(),
-        workflow_path.display()
+        "1. Switch to `{}` to inspect the bootstrap and start your patch layer.",
+        report.patch_branch
     );
-    println!("2. Switch to `{}`.", report.patch_branch);
-    println!("3. Commit the generated files on that branch.");
-    println!("4. Run `forksync sync --trigger local-debug` to preview local sync behavior.");
+    println!("2. Add your custom fork changes there and commit them.");
+    println!("3. Run `forksync sync --trigger local-debug` to preview local sync behavior.");
+    println!(
+        "4. If automatic push failed, push `{}`, `{}`, and `{}` to origin manually.",
+        report.patch_branch, report.live_branch, report.output_branch
+    );
 
     Ok(())
 }

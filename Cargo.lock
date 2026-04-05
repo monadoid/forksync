@@ -187,6 +187,7 @@ dependencies = [
  "forksync-git",
  "forksync-github",
  "forksync-state",
+ "tempfile",
  "thiserror",
 ]
 

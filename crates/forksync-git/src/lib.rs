@@ -69,8 +69,16 @@ pub enum GitError {
 pub trait GitBackend: Send + Sync {
     fn ensure_repo(&self, repo_path: &Path) -> Result<(), GitError>;
     fn worktree_clean(&self, repo_path: &Path) -> Result<bool, GitError>;
+    fn paths_clean(&self, repo_path: &Path, paths: &[PathBuf]) -> Result<bool, GitError>;
     fn current_ref(&self, repo_path: &Path) -> Result<String, GitError>;
     fn checkout(&self, repo_path: &Path, reference: &str) -> Result<(), GitError>;
+    fn checkout_new_branch(
+        &self,
+        repo_path: &Path,
+        branch: &str,
+        target: &str,
+    ) -> Result<(), GitError>;
+    fn merge_ff_only(&self, repo_path: &Path, target: &str) -> Result<(), GitError>;
     fn head_sha(&self, repo_path: &Path) -> Result<String, GitError>;
     fn remote_exists(&self, repo_path: &Path, remote_name: &str) -> Result<bool, GitError>;
     fn get_remote_url(&self, repo_path: &Path, remote_name: &str) -> Result<String, GitError>;
@@ -93,6 +101,31 @@ pub trait GitBackend: Send + Sync {
         branch: &str,
         target: &str,
     ) -> Result<(), GitError>;
+    fn commit_paths(
+        &self,
+        repo_path: &Path,
+        paths: &[PathBuf],
+        message: &str,
+    ) -> Result<String, GitError>;
+    fn push_branch(
+        &self,
+        repo_path: &Path,
+        remote_name: &str,
+        branch: &str,
+    ) -> Result<(), GitError>;
+    fn push_refspec(
+        &self,
+        repo_path: &Path,
+        remote_name: &str,
+        refspec: &str,
+    ) -> Result<(), GitError>;
+    fn add_detached_worktree(
+        &self,
+        repo_path: &Path,
+        worktree_path: &Path,
+        target: &str,
+    ) -> Result<(), GitError>;
+    fn remove_worktree(&self, repo_path: &Path, worktree_path: &Path) -> Result<(), GitError>;
     fn delete_branch(&self, repo_path: &Path, branch: &str) -> Result<(), GitError>;
     fn derive_patch_commits(
         &self,
@@ -176,6 +209,21 @@ impl GitBackend for SystemGitBackend {
         Ok(status.is_empty())
     }
 
+    fn paths_clean(&self, repo_path: &Path, paths: &[PathBuf]) -> Result<bool, GitError> {
+        if paths.is_empty() {
+            return Ok(true);
+        }
+
+        let mut args = vec![
+            "status".to_string(),
+            "--porcelain".to_string(),
+            "--".to_string(),
+        ];
+        args.extend(paths.iter().map(|path| path.to_string_lossy().into_owned()));
+        let output = self.run_git(repo_path, args)?;
+        Ok(output.is_empty())
+    }
+
     fn current_ref(&self, repo_path: &Path) -> Result<String, GitError> {
         let branch = self.run_git(repo_path, ["branch", "--show-current"])?;
         if !branch.is_empty() {
@@ -187,6 +235,21 @@ impl GitBackend for SystemGitBackend {
 
     fn checkout(&self, repo_path: &Path, reference: &str) -> Result<(), GitError> {
         self.run_git(repo_path, ["checkout", "--quiet", reference])
+            .map(|_| ())
+    }
+
+    fn checkout_new_branch(
+        &self,
+        repo_path: &Path,
+        branch: &str,
+        target: &str,
+    ) -> Result<(), GitError> {
+        self.run_git(repo_path, ["checkout", "--quiet", "-B", branch, target])
+            .map(|_| ())
+    }
+
+    fn merge_ff_only(&self, repo_path: &Path, target: &str) -> Result<(), GitError> {
+        self.run_git(repo_path, ["merge", "--ff-only", target])
             .map(|_| ())
     }
 
@@ -289,6 +352,72 @@ impl GitBackend for SystemGitBackend {
     ) -> Result<(), GitError> {
         self.run_git(repo_path, ["branch", "--force", branch, target])
             .map(|_| ())
+    }
+
+    fn commit_paths(
+        &self,
+        repo_path: &Path,
+        paths: &[PathBuf],
+        message: &str,
+    ) -> Result<String, GitError> {
+        let mut add_args = vec!["add".to_string(), "--".to_string()];
+        add_args.extend(paths.iter().map(|path| path.to_string_lossy().into_owned()));
+        self.run_git(repo_path, add_args).map(|_| ())?;
+        self.run_git(repo_path, ["commit", "-m", message])
+            .map(|_| ())?;
+        self.head_sha(repo_path)
+    }
+
+    fn push_branch(
+        &self,
+        repo_path: &Path,
+        remote_name: &str,
+        branch: &str,
+    ) -> Result<(), GitError> {
+        self.run_git(repo_path, ["push", remote_name, branch])
+            .map(|_| ())
+    }
+
+    fn push_refspec(
+        &self,
+        repo_path: &Path,
+        remote_name: &str,
+        refspec: &str,
+    ) -> Result<(), GitError> {
+        self.run_git(repo_path, ["push", remote_name, refspec])
+            .map(|_| ())
+    }
+
+    fn add_detached_worktree(
+        &self,
+        repo_path: &Path,
+        worktree_path: &Path,
+        target: &str,
+    ) -> Result<(), GitError> {
+        self.run_git(
+            repo_path,
+            [
+                "worktree",
+                "add",
+                "--detach",
+                worktree_path.to_string_lossy().as_ref(),
+                target,
+            ],
+        )
+        .map(|_| ())
+    }
+
+    fn remove_worktree(&self, repo_path: &Path, worktree_path: &Path) -> Result<(), GitError> {
+        self.run_git(
+            repo_path,
+            [
+                "worktree",
+                "remove",
+                "--force",
+                worktree_path.to_string_lossy().as_ref(),
+            ],
+        )
+        .map(|_| ())
     }
 
     fn delete_branch(&self, repo_path: &Path, branch: &str) -> Result<(), GitError> {

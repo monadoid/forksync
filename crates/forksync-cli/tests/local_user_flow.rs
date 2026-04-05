@@ -9,11 +9,12 @@ struct LocalForkFixture {
     _temp: TempDir,
     upstream_working: PathBuf,
     upstream_remote: PathBuf,
+    fork_remote: PathBuf,
     user_repo: PathBuf,
 }
 
 #[test]
-fn init_creates_generated_files_state_and_branches() {
+fn init_auto_commits_and_pushes_bootstrap() {
     let fixture = create_local_fork_fixture();
 
     let output = run_cli(&fixture.user_repo, ["init"]);
@@ -24,14 +25,11 @@ fn init_creates_generated_files_state_and_branches() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let config_path = fixture.user_repo.join(".forksync.yml");
-    let workflow_path = fixture.user_repo.join(".github/workflows/forksync.yml");
     let state_path = fixture.user_repo.join(".forksync/state/state.yml");
 
-    assert!(config_path.exists(), "expected config file to exist");
-    assert!(workflow_path.exists(), "expected workflow file to exist");
     assert!(state_path.exists(), "expected state file to exist");
 
+    let config_path = fixture.user_repo.join(".forksync.yml");
     let config = load_from_path(&config_path).expect("load generated config");
     assert_eq!(config.upstream.remote_name, "upstream");
     assert_eq!(config.upstream.branch, "main");
@@ -43,6 +41,26 @@ fn init_creates_generated_files_state_and_branches() {
     assert_eq!(current_branch, "main");
     assert!(local_branch_exists(&fixture.user_repo, "forksync/patches"));
     assert!(local_branch_exists(&fixture.user_repo, "forksync/live"));
+    assert!(
+        git_output(&fixture.user_repo, ["show", "main:.forksync.yml"]).contains("forksync/patches")
+    );
+    assert!(
+        git_output(
+            &fixture.user_repo,
+            ["show", "forksync/patches:.forksync.yml"]
+        )
+        .contains("forksync/patches")
+    );
+    assert!(
+        git_output(&fixture.user_repo, ["show", "forksync/live:.forksync.yml"])
+            .contains("forksync/patches")
+    );
+    assert!(remote_branch_exists(&fixture.fork_remote, "main"));
+    assert!(remote_branch_exists(
+        &fixture.fork_remote,
+        "forksync/patches"
+    ));
+    assert!(remote_branch_exists(&fixture.fork_remote, "forksync/live"));
 
     let state = FileStateStore::new(state_path)
         .load()
@@ -51,6 +69,37 @@ fn init_creates_generated_files_state_and_branches() {
         state.patch_base_sha.is_some(),
         "expected patch base sha to be recorded"
     );
+}
+
+#[test]
+fn init_keeps_dirty_feature_branch_checked_out() {
+    let fixture = create_local_fork_fixture();
+
+    git(&fixture.user_repo, ["switch", "-c", "feature/wip"]);
+    fs::write(fixture.user_repo.join("WIP.txt"), "leave me alone\n").expect("write dirty file");
+
+    let output = run_cli(&fixture.user_repo, ["init"]);
+    assert!(
+        output.status.success(),
+        "init failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_eq!(
+        git_output(&fixture.user_repo, ["branch", "--show-current"]),
+        "feature/wip"
+    );
+    assert!(git_output(&fixture.user_repo, ["status", "--short"]).contains("?? WIP.txt"));
+    assert!(
+        git_output_git_dir(&fixture.fork_remote, ["show", "main:.forksync.yml"])
+            .contains("forksync/patches")
+    );
+    assert!(remote_branch_exists(
+        &fixture.fork_remote,
+        "forksync/patches"
+    ));
+    assert!(remote_branch_exists(&fixture.fork_remote, "forksync/live"));
 }
 
 #[test]
@@ -66,20 +115,6 @@ fn sync_replays_patch_branch_onto_updated_upstream() {
     );
 
     git(&fixture.user_repo, ["switch", "forksync/patches"]);
-    git(
-        &fixture.user_repo,
-        [
-            "add",
-            ".forksync.yml",
-            ".github/workflows/forksync.yml",
-            ".gitignore",
-        ],
-    );
-    git(
-        &fixture.user_repo,
-        ["commit", "-m", "Add ForkSync bootstrap"],
-    );
-
     fs::write(fixture.user_repo.join("PATCH.txt"), "local patch\n").expect("write patch file");
     git(&fixture.user_repo, ["add", "PATCH.txt"]);
     git(&fixture.user_repo, ["commit", "-m", "Add local patch"]);
@@ -208,6 +243,7 @@ fn create_local_fork_fixture() -> LocalForkFixture {
         _temp: temp,
         upstream_working,
         upstream_remote,
+        fork_remote,
         user_repo,
     }
 }
@@ -265,4 +301,36 @@ fn local_branch_exists(cwd: &Path, branch: &str) -> bool {
         .status()
         .expect("run git show-ref")
         .success()
+}
+
+fn remote_branch_exists(git_dir: &Path, branch: &str) -> bool {
+    Command::new("git")
+        .args([
+            "--git-dir",
+            git_dir.to_str().expect("utf-8 path"),
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
+        .status()
+        .expect("run git show-ref for bare repo")
+        .success()
+}
+
+fn git_output_git_dir<const N: usize>(git_dir: &Path, args: [&str; N]) -> String {
+    let output = Command::new("git")
+        .args(["--git-dir", git_dir.to_str().expect("utf-8 path")])
+        .args(args)
+        .output()
+        .expect("run git command against bare repo");
+    assert!(
+        output.status.success(),
+        "git command failed in bare repo {}\nargs: {:?}\nstdout:\n{}\nstderr:\n{}",
+        git_dir.display(),
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }

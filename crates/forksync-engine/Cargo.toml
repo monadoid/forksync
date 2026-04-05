@@ -11,6 +11,7 @@ forksync-config = { path = "../forksync-config" }
 forksync-git = { path = "../forksync-git" }
 forksync-github = { path = "../forksync-github" }
 forksync-state = { path = "../forksync-state" }
+tempfile.workspace = true
 thiserror.workspace = true
 
 [lints]

@@ -20,6 +20,8 @@ This repository README is the coordination file for the project. It captures the
   - [x] First crate manifests created
   - [x] First schema-first tests written
   - [x] First local dogfood slice works end to end
+  - [x] `init` now bootstraps through a detached temporary worktree
+  - [x] `init` auto-commits and attempts to push managed refs
 
 ## Product Statement
 
@@ -236,12 +238,12 @@ The primary user journey in v1 should be optimized for a fork-first, almost-no-c
    - assume GitHub workflow installation is desired
 6. ForkSync writes `.forksync.yml`.
 7. ForkSync writes a GitHub Actions workflow file under `.github/workflows/`.
-8. ForkSync creates or updates the local branches needed for management:
+8. ForkSync creates a bootstrap commit in a detached temporary worktree so the generated setup can be applied without hijacking the user's current checkout.
+9. ForkSync creates or updates the local branches needed for management:
    - `forksync/patches`
    - `forksync/live`
-9. ForkSync creates `forksync/patches` and `forksync/live` in the background without changing the user's current checkout.
-10. The user reviews the generated config and workflow in their current working tree.
-11. When ready, the user switches to `forksync/patches`, commits the generated files there, and pushes.
+10. ForkSync attempts to push the bootstrap refs to `origin` automatically so the user does not have to remember to push the managed branches by hand.
+11. The user switches to `forksync/patches` whenever they are ready to inspect the bootstrap and start making local changes.
 12. From that point on, GitHub Actions keeps the fork current on schedule and via manual dispatch.
 
 ### No-config goal
@@ -250,10 +252,9 @@ The no-config experience should be:
 
 - clone fork
 - run `forksync init`
-- review generated files
+- let ForkSync create and try to push the bootstrap commit automatically
 - switch to `forksync/patches`
-- commit them there
-- push
+- start making local changes
 
 That is the UX bar to optimize for.
 
@@ -267,9 +268,12 @@ That is the UX bar to optimize for.
 - fall back to explicit flags only when detection fails
 - generate a complete `.forksync.yml` from typed defaults
 - generate the GitHub workflow file
+- create the bootstrap commit inside a detached temporary worktree
 - create local management branches if missing
+- update the output branch from the bootstrap commit when it is safe to do so locally
+- attempt to push the managed refs to `origin`
 - leave the user's current branch untouched
-- tell the user when to switch to `forksync/patches`
+- tell the user to switch to `forksync/patches` when they want to start customizing
 - print the exact next steps for the user
 
 ### What the user should see after `forksync init`
@@ -288,7 +292,7 @@ Before trusting GitHub Actions, a user should be able to test ForkSync locally:
 
 1. Clone their fork.
 2. Run `forksync init`.
-3. Switch to `forksync/patches` and commit the generated files there.
+3. Switch to `forksync/patches` and inspect the already-created bootstrap commit.
 4. Make a custom change on `forksync/patches`.
 5. Simulate upstream movement locally or point to a real upstream remote.
 6. Run `forksync sync --trigger local-debug`.
@@ -310,8 +314,8 @@ The first local user-visible milestone is:
 
 - open a forked repo locally
 - run `forksync init`
-- see `.forksync.yml`
-- see `.github/workflows/forksync.yml`
+- let ForkSync create the bootstrap commit and managed refs automatically
+- inspect `.forksync.yml` and `.github/workflows/forksync.yml` on the managed branches
 - see `forksync/patches`
 - see `forksync/live`
 
@@ -459,8 +463,11 @@ Definition of done for a feature:
   - [x] Upstream detection hooks
   - [x] Config generation
   - [x] zero-config default path from a forked repo
+  - [x] detached temp-worktree bootstrap flow
+  - [x] automatic bootstrap commit creation
   - [x] Branch creation for `forksync/patches`
   - [x] Branch creation for `forksync/live`
+  - [x] automatic push attempts for managed refs
   - [x] GitHub workflow file generation and installation
   - [x] user-facing next-step output
 - [ ] TDD scope
@@ -581,14 +588,13 @@ Once the setup and local sync paths exist, the first manual demo should look lik
 1. Fork a public GitHub repo.
 2. Clone the fork into `sandbox/repos/<name>`.
 3. Run `forksync init`.
-4. Review `.forksync.yml` and `.github/workflows/forksync.yml`.
-5. Switch to `forksync/patches`.
-6. Commit the generated files.
-7. Create a change on `forksync/patches`.
-8. Simulate an upstream change.
-9. Run `forksync sync --trigger local-debug`.
-10. Inspect `forksync/live`, `main`, and `.forksync/state`.
-11. Repeat with a conflict scenario.
+4. Switch to `forksync/patches`.
+5. Review the already-committed `.forksync.yml` and `.github/workflows/forksync.yml`.
+6. Create a change on `forksync/patches`.
+7. Simulate an upstream change.
+8. Run `forksync sync --trigger local-debug`.
+9. Inspect `forksync/live`, `main`, and `.forksync/state`.
+10. Repeat with a conflict scenario.
 
 ### PR 11: Agent Abstraction and Stub Provider
 
@@ -702,6 +708,7 @@ Contributing rules for this repository:
 
 - always follow TDD
 - always write strongly typed schemas and think schema-first
+- use explicit state machines where they clarify Rust lifecycle transitions or side-effect boundaries
 - keep the CLI and workflow wrappers thin over reusable library APIs
 - add or update tests whenever behavior changes
 - prefer deterministic engine behavior over implicit magic

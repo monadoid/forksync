@@ -9,7 +9,8 @@ use forksync_git::{
 use forksync_github::{FailureReporter, generate_sync_workflow};
 use forksync_state::{PersistedState, RecordedOutcome, RunRecord, StateError, StateStore};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use tempfile::TempDir;
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +39,8 @@ pub struct InitReport {
     pub patch_branch: String,
     pub live_branch: String,
     pub output_branch: String,
+    pub bootstrap_commit_sha: String,
+    pub pushed_branches: Vec<String>,
     pub notes: Vec<String>,
 }
 
@@ -90,16 +93,30 @@ pub enum EngineError {
         #[source]
         source: std::io::Error,
     },
+    #[error("failed to create temporary worktree staging directory: {source}")]
+    CreateTempDir {
+        #[source]
+        source: std::io::Error,
+    },
     #[error("failed to write file {path}: {source}")]
     WriteFile {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
+    #[error("path {path} must be inside repository {repo_path}")]
+    PathOutsideRepo { path: PathBuf, repo_path: PathBuf },
     #[error("sync requires a clean worktree")]
     DirtyWorktree,
     #[error("validation mode `{0:?}` is not implemented in the local dogfood slice yet")]
     UnsupportedValidation(ValidationMode),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BranchUpdateOutcome {
+    ResetBackground,
+    FastForwardedCheckedOut,
+    SkippedCheckedOutDirty,
 }
 
 pub struct SyncEngine<G, A, S, R> {
@@ -164,6 +181,7 @@ where
 
         let current_head = self.git.head_sha(&request.repo_path)?;
         let current_ref = self.git.current_ref(&request.repo_path)?;
+        let worktree_clean = self.git.worktree_clean(&request.repo_path)?;
         let output_branch = if self.git.remote_exists(&request.repo_path, "origin")? {
             self.git
                 .default_branch_for_remote(&request.repo_path, "origin")
@@ -182,30 +200,45 @@ where
         if output_branch != "main" {
             config.branches.output_mode = forksync_config::OutputMode::Custom;
         }
+        let bootstrap_commit_sha =
+            self.write_init_bootstrap_commit(request, &config, &current_head)?;
+        let workflow_path = request
+            .install_workflow
+            .then(|| request.workflow_path.clone());
 
+        let mut local_branch_updates = Vec::new();
         if request.create_branches {
-            self.git.create_or_reset_branch(
-                &request.repo_path,
-                &config.branches.patch,
-                &current_head,
-            )?;
-            self.git.create_or_reset_branch(
-                &request.repo_path,
-                &config.branches.live,
-                &current_head,
-            )?;
+            local_branch_updates.push((
+                config.branches.patch.clone(),
+                self.update_local_branch(
+                    &request.repo_path,
+                    &config.branches.patch,
+                    &bootstrap_commit_sha,
+                    &current_ref,
+                    worktree_clean,
+                )?,
+            ));
+            local_branch_updates.push((
+                config.branches.live.clone(),
+                self.update_local_branch(
+                    &request.repo_path,
+                    &config.branches.live,
+                    &bootstrap_commit_sha,
+                    &current_ref,
+                    worktree_clean,
+                )?,
+            ));
         }
-
-        write_to_path(&request.config_path, &config)?;
-        ensure_forksync_gitignore_rules(&request.repo_path)?;
-
-        let workflow_path = if request.install_workflow {
-            let generated = generate_sync_workflow(&config);
-            write_plain_file(&request.workflow_path, &generated.contents)?;
-            Some(request.workflow_path.clone())
-        } else {
-            None
-        };
+        local_branch_updates.push((
+            config.branches.output.clone(),
+            self.update_local_branch(
+                &request.repo_path,
+                &config.branches.output,
+                &bootstrap_commit_sha,
+                &current_ref,
+                worktree_clean,
+            )?,
+        ));
 
         let initial_state = PersistedState {
             last_processed_upstream_sha: None,
@@ -216,33 +249,44 @@ where
         self.state.save(&initial_state)?;
 
         let mut notes = vec![
-            "Generated .forksync.yml from detected defaults.".to_string(),
-            "Created local management branches for patches and live state.".to_string(),
+            "Generated the ForkSync bootstrap commit from typed defaults in a detached temporary worktree.".to_string(),
             "Ensured local ForkSync state paths are ignored by Git.".to_string(),
         ];
 
         if request.create_branches {
             notes.push(format!(
-                "Created {} and {} in the background without changing your current checkout.",
+                "Prepared {} and {} from the bootstrap commit without switching your current checkout.",
                 config.branches.patch, config.branches.live
             ));
         }
 
-        notes.push(format!(
-            "When you are ready, switch to {} and commit the generated files into the patch layer.",
-            config.branches.patch
-        ));
+        for (branch, outcome) in &local_branch_updates {
+            match outcome {
+                BranchUpdateOutcome::ResetBackground => notes.push(format!(
+                    "Updated local branch {} in the background.",
+                    branch
+                )),
+                BranchUpdateOutcome::FastForwardedCheckedOut => notes.push(format!(
+                    "Fast-forwarded your checked-out branch {} to include the bootstrap commit.",
+                    branch
+                )),
+                BranchUpdateOutcome::SkippedCheckedOutDirty => notes.push(format!(
+                    "Left checked-out branch {} unchanged locally because your worktree is dirty; the bootstrap commit still exists on the managed refs and can be pushed remotely.",
+                    branch
+                )),
+            }
+        }
 
         if current_ref != output_branch {
             notes.push(format!(
-                "Detected output branch {} while leaving your current branch {} untouched.",
+                "Detected output branch {} while leaving your current branch {} checked out.",
                 output_branch, current_ref
             ));
         }
 
         if request.initial_sync {
             notes.push(
-                "Initial sync is intentionally deferred until after you commit the generated files."
+                "Initial sync is still intentionally deferred; run `forksync sync --trigger local-debug` after you add your first patch commit."
                     .to_string(),
             );
         }
@@ -254,6 +298,30 @@ where
             );
         }
 
+        let pushed_branches = self.push_init_branches(
+            &request.repo_path,
+            &config,
+            &bootstrap_commit_sha,
+            request.create_branches,
+            &mut notes,
+        )?;
+        if pushed_branches.is_empty() {
+            notes.push(
+                "Did not push bootstrap refs automatically. If you have an origin remote, push the managed branches manually."
+                    .to_string(),
+            );
+        } else {
+            notes.push(format!(
+                "Pushed bootstrap refs to origin: {}.",
+                pushed_branches.join(", ")
+            ));
+        }
+
+        notes.push(format!(
+            "Switch to {} when you are ready to start making custom fork changes.",
+            config.branches.patch
+        ));
+
         Ok(InitReport {
             config_path: request.config_path.clone(),
             workflow_path,
@@ -263,6 +331,8 @@ where
             patch_branch: config.branches.patch,
             live_branch: config.branches.live,
             output_branch,
+            bootstrap_commit_sha,
+            pushed_branches,
             notes,
         })
     }
@@ -431,6 +501,109 @@ where
 
         Ok("origin".to_string())
     }
+
+    fn write_init_bootstrap_commit(
+        &self,
+        request: &InitRequest,
+        config: &RepoConfig,
+        base_ref: &str,
+    ) -> Result<String, EngineError> {
+        let temp_root = TempDir::new().map_err(|source| EngineError::CreateTempDir { source })?;
+        let worktree_path = temp_root.path().join("bootstrap");
+        self.git
+            .add_detached_worktree(&request.repo_path, &worktree_path, base_ref)?;
+
+        let result = (|| {
+            let config_rel = repo_relative_path(&request.repo_path, &request.config_path)?;
+            let config_path = worktree_path.join(&config_rel);
+            write_to_path(&config_path, config)?;
+
+            let mut commit_paths = vec![config_rel, PathBuf::from(".gitignore")];
+
+            if request.install_workflow {
+                let workflow_rel = repo_relative_path(&request.repo_path, &request.workflow_path)?;
+                let generated = generate_sync_workflow(config);
+                write_plain_file(&worktree_path.join(&workflow_rel), &generated.contents)?;
+                commit_paths.push(workflow_rel);
+            }
+
+            ensure_forksync_gitignore_rules(&worktree_path)?;
+
+            self.git
+                .commit_paths(
+                    &worktree_path,
+                    &commit_paths,
+                    "Initialize ForkSync bootstrap",
+                )
+                .map_err(EngineError::from)
+        })();
+
+        let cleanup = self.git.remove_worktree(&request.repo_path, &worktree_path);
+        match (result, cleanup) {
+            (Ok(commit_sha), Ok(())) => Ok(commit_sha),
+            (Err(err), Ok(())) => Err(err),
+            (Ok(_), Err(err)) => Err(EngineError::from(err)),
+            (Err(err), Err(_)) => Err(err),
+        }
+    }
+
+    fn update_local_branch(
+        &self,
+        repo_path: &Path,
+        branch: &str,
+        target: &str,
+        current_ref: &str,
+        worktree_clean: bool,
+    ) -> Result<BranchUpdateOutcome, EngineError> {
+        if current_ref == branch {
+            if !worktree_clean {
+                return Ok(BranchUpdateOutcome::SkippedCheckedOutDirty);
+            }
+
+            self.git.merge_ff_only(repo_path, target)?;
+            return Ok(BranchUpdateOutcome::FastForwardedCheckedOut);
+        }
+
+        self.git.create_or_reset_branch(repo_path, branch, target)?;
+        Ok(BranchUpdateOutcome::ResetBackground)
+    }
+
+    fn push_init_branches(
+        &self,
+        repo_path: &Path,
+        config: &RepoConfig,
+        bootstrap_commit_sha: &str,
+        create_branches: bool,
+        notes: &mut Vec<String>,
+    ) -> Result<Vec<String>, EngineError> {
+        if !self.git.remote_exists(repo_path, "origin")? {
+            notes.push("No origin remote found, so ForkSync skipped automatic push.".to_string());
+            return Ok(Vec::new());
+        }
+
+        let mut branches = Vec::new();
+        if create_branches {
+            branches.push(config.branches.patch.clone());
+            branches.push(config.branches.live.clone());
+        }
+        if !branches.contains(&config.branches.output) {
+            branches.push(config.branches.output.clone());
+        }
+
+        let mut pushed = Vec::new();
+        for branch in branches {
+            let refspec = format!("{bootstrap_commit_sha}:refs/heads/{branch}");
+            match self.git.push_refspec(repo_path, "origin", &refspec) {
+                Ok(()) => pushed.push(branch),
+                Err(err) => notes.push(format!(
+                    "Automatic push for branch {} failed: {}",
+                    branch, err
+                )),
+            }
+        }
+
+        Ok(pushed)
+    }
 }
 
 pub fn default_state_file_path(repo_path: &std::path::Path, config: &RepoConfig) -> PathBuf {
@@ -451,6 +624,15 @@ fn write_plain_file(path: &PathBuf, contents: &str) -> Result<(), EngineError> {
         path: path.clone(),
         source,
     })
+}
+
+fn repo_relative_path(repo_path: &Path, path: &Path) -> Result<PathBuf, EngineError> {
+    path.strip_prefix(repo_path)
+        .map(|relative| relative.to_path_buf())
+        .map_err(|_| EngineError::PathOutsideRepo {
+            path: path.to_path_buf(),
+            repo_path: repo_path.to_path_buf(),
+        })
 }
 
 fn ensure_forksync_gitignore_rules(repo_path: &std::path::Path) -> Result<(), EngineError> {
