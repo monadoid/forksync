@@ -91,7 +91,7 @@ fn init_is_idempotent_when_repo_is_already_bootstrapped() {
         String::from_utf8_lossy(&second.stderr)
     );
     let stdout = String::from_utf8_lossy(&second.stdout);
-    assert!(stdout.contains("already initialized"));
+    assert!(stdout.contains("ForkSync is set up."));
     assert_eq!(
         git_output(&fixture.user_repo, ["rev-parse", "HEAD"]),
         head_before
@@ -220,7 +220,8 @@ fn init_no_auto_push_leaves_remote_unmodified_and_prints_exact_command() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Skipped automatic bootstrap push"));
+    assert!(stdout.contains("ForkSync is set up."));
+    assert!(stdout.contains("ForkSync left the managed branch publication to you."));
     assert!(stdout.contains(
         "git push origin forksync/patches:forksync/patches forksync/live:forksync/live main:main"
     ));
@@ -280,9 +281,7 @@ fn init_prints_exact_manual_push_command_when_origin_rejects_pushes() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Automatic push for branch forksync/patches failed"));
-    assert!(stdout.contains("Automatic push for branch forksync/live failed"));
-    assert!(stdout.contains("Automatic push for branch main failed"));
+    assert!(stdout.contains("ForkSync is set up."));
     assert!(stdout.contains(
         "git push origin forksync/patches:forksync/patches forksync/live:forksync/live main:main"
     ));
@@ -350,7 +349,7 @@ fn init_manual_push_flag_and_disabled_agent_keep_remote_unbootstrapped() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("git push origin forksync/patches:forksync/patches forksync/live:forksync/live main:main"));
-    assert!(stdout.contains("Skipped automatic bootstrap push"));
+    assert!(stdout.contains("ForkSync left the managed branch publication to you."));
 
     let local_config = from_yaml_str(&git_output(
         &fixture.user_repo,

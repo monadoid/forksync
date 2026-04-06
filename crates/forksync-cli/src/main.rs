@@ -3,6 +3,7 @@ mod telemetry;
 
 use anyhow::{Context, Result, anyhow};
 use clap::{ArgAction, Args, Parser, Subcommand};
+use cliclack::{note, outro, outro_cancel};
 use dotenvy::from_path_override;
 use forksync_agent::OpenCodeFactory;
 use forksync_config::{
@@ -215,6 +216,9 @@ pub struct DevActArgs {
 pub struct DevInitArgs {
     #[arg(long, default_value = "init-demo", hide = true)]
     pub dest: String,
+
+    #[arg(long, default_value_t = false)]
+    pub prepare_only: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -226,10 +230,22 @@ pub enum RegistryCommand {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
     let cli = Cli::parse();
-    let _telemetry = telemetry::init_telemetry(cli.verbose, cli.json_logs)?;
-    let repo_path = std::env::current_dir().context("resolve current directory")?;
+    let _telemetry = match telemetry::init_telemetry(cli.verbose, cli.json_logs) {
+        Ok(guard) => guard,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+    };
+    let repo_path = match std::env::current_dir().context("resolve current directory") {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+    };
     let _ = from_path_override(repo_path.join(".env"));
     let config_path = resolve_path(&repo_path, &cli.config);
     debug!(
@@ -250,12 +266,14 @@ async fn main() -> Result<()> {
         Command::Registry(_) => Err(anyhow!("registry commands are not implemented yet")),
     };
 
-    match &result {
-        Ok(()) => info!("command completed successfully"),
-        Err(error) => tracing::error!(error = %error, "command failed"),
+    if let Err(error) = result {
+        if std::io::stderr().is_terminal() {
+            let _ = outro_cancel(format!("{error}"));
+        } else {
+            eprintln!("Error: {error}");
+        }
+        std::process::exit(1);
     }
-
-    result
 }
 
 #[instrument(skip_all, fields(repo_path = %repo_path.display(), config_path = %config_path.display()))]
@@ -308,72 +326,55 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
         auto_push: resolved_preferences.auto_push,
         agent_provider: resolved_preferences.agent_provider,
     })?;
-    info!(
-        upstream_remote = %report.upstream_remote,
-        upstream_branch = %report.upstream_branch,
-        bootstrap_commit = %report.bootstrap_commit_sha,
-        "initialized ForkSync repository"
+    print_init_summary(&report, &resolved_preferences, &push_preflight)?;
+
+    Ok(())
+}
+
+fn print_init_summary(
+    report: &forksync_engine::InitReport,
+    resolved_preferences: &init_wizard::ResolvedInitPreferences,
+    push_preflight: &InitPushPreflight,
+) -> Result<()> {
+    let manual_push_command = format!(
+        "git push origin {}",
+        report
+            .manual_push_branches
+            .iter()
+            .map(|branch| format!("{branch}:{branch}"))
+            .collect::<Vec<_>>()
+            .join(" ")
     );
 
-    println!("Initialized ForkSync in {}", repo_path.display());
-    println!(
-        "Config path in bootstrap commit: {}",
-        report.config_path.display()
+    let how_it_works = format!(
+        "Keep working on `{}`. ForkSync will keep it current from upstream, and `{}` is the generated recovery branch if you ever need to inspect or recover a sync.",
+        report.output_branch, report.live_branch
     );
-    if let Some(workflow) = report.workflow_path {
-        println!("Workflow path in bootstrap commit: {}", workflow.display());
-    }
-    println!(
-        "Upstream: {} ({}) via remote {}",
-        report.upstream_repo, report.upstream_branch, report.upstream_remote
-    );
-    println!(
-        "Branches: patch={}, live={}, output={}",
-        report.patch_branch, report.live_branch, report.output_branch
-    );
-    println!("Bootstrap commit: {}", report.bootstrap_commit_sha);
-    if !report.pushed_branches.is_empty() {
-        println!("Pushed: {}", report.pushed_branches.join(", "));
-    }
-    if !resolved_preferences.auto_push {
-        if let Some(reason) = &push_preflight.reason {
-            println!("- ForkSync left managed branch publication manual: {reason}");
-        } else {
-            println!("- ForkSync left managed branch publication manual.");
-        }
-    }
-    for note in report.notes {
-        println!("- {}", note);
-    }
-    println!("Next steps:");
-    println!(
-        "1. Work on `{}` like your normal fork branch.",
-        report.output_branch
-    );
-    println!(
-        "2. Treat `{}` as the machine-generated recovery/debug branch.",
-        report.live_branch
-    );
-    println!(
-        "3. Add your custom fork changes on `{}` and commit them there.",
-        report.output_branch
-    );
-    println!("4. Run `forksync sync --trigger local-debug` to preview local sync behavior.");
-    if !report.manual_push_branches.is_empty() {
-        println!(
-            "5. If you want to publish the managed branches now, run this exact command next:"
-        );
-        println!(
-            "   git push origin {}",
-            report
-                .manual_push_branches
-                .iter()
-                .map(|branch| format!("{branch}:{branch}"))
-                .collect::<Vec<_>>()
-                .join(" ")
-        );
+
+    let next_message = if report.manual_push_branches.is_empty() {
+        format!(
+            "You are set up. If you want to test the flow locally, run `forksync sync --trigger local-debug` from this repo."
+        )
+    } else if let Some(reason) = &push_preflight.reason {
+        format!(
+            "ForkSync did not publish the managed branches automatically because {reason}.\nRun this next:\n{manual_push_command}"
+        )
+    } else if !resolved_preferences.auto_push {
+        format!(
+            "ForkSync left the managed branch publication to you.\nRun this next:\n{manual_push_command}"
+        )
     } else {
-        println!("5. Automatic push already completed for the managed branches.");
+        format!("Run this next:\n{manual_push_command}")
+    };
+
+    if std::io::stdout().is_terminal() {
+        outro("ForkSync is set up.")?;
+        note("How it works", how_it_works)?;
+        note("Next", next_message)?;
+    } else {
+        println!("ForkSync is set up.");
+        println!("{how_it_works}");
+        println!("{next_message}");
     }
 
     Ok(())
@@ -683,12 +684,22 @@ fn run_dev_act(repo_root: &Path, args: DevActArgs) -> Result<()> {
 #[instrument(skip_all, fields(repo_root = %repo_root.display(), dest = %args.dest))]
 fn run_dev_init(repo_root: &Path, args: DevInitArgs) -> Result<()> {
     let paths = create_dev_demo_repos(repo_root, &args.dest)?;
-    let binary_path = std::env::current_exe().context("resolve forksync binary path")?;
 
     println!(
         "Created local ForkSync init sandbox under {}",
         paths.root.display()
     );
+    println!("User repo: {}", paths.user_repo.display());
+
+    if args.prepare_only {
+        println!();
+        println!("Run this exact command next to see the real production init flow:");
+        println!("  cd {}", shell_escape_path(&paths.user_repo));
+        println!("  forksync init");
+        return Ok(());
+    }
+
+    let binary_path = std::env::current_exe().context("resolve forksync binary path")?;
     println!("Launching interactive `forksync init` in:");
     println!("  {}", paths.user_repo.display());
     println!();

@@ -28,8 +28,17 @@ impl Drop for TelemetryGuard {
 }
 
 pub fn init_telemetry(verbose: bool, json_logs: bool) -> Result<TelemetryGuard> {
+    let otel_enabled = std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").is_some();
     let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(if verbose { "debug" } else { "info" }));
+        .unwrap_or_else(|_| {
+            EnvFilter::new(if verbose {
+                "debug"
+            } else if json_logs || otel_enabled {
+                "info"
+            } else {
+                "off"
+            })
+        });
 
     let resource = Resource::builder_empty()
         .with_attributes([
@@ -38,23 +47,27 @@ pub fn init_telemetry(verbose: bool, json_logs: bool) -> Result<TelemetryGuard> 
         ])
         .build();
 
-    let fmt_layer = if json_logs {
-        fmt::layer()
-            .json()
-            .with_target(false)
-            .with_current_span(false)
-            .with_span_list(false)
-            .boxed()
+    let fmt_layer = if verbose || json_logs {
+        Some(if json_logs {
+            fmt::layer()
+                .json()
+                .with_target(false)
+                .with_current_span(false)
+                .with_span_list(false)
+                .boxed()
+        } else {
+            fmt::layer()
+                .compact()
+                .with_target(false)
+                .with_thread_names(false)
+                .without_time()
+                .boxed()
+        })
     } else {
-        fmt::layer()
-            .compact()
-            .with_target(false)
-            .with_thread_names(false)
-            .without_time()
-            .boxed()
+        None
     };
 
-    if std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").is_some() {
+    if otel_enabled {
         global::set_text_map_propagator(
             opentelemetry_sdk::propagation::TraceContextPropagator::new(),
         );
