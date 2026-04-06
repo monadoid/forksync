@@ -441,6 +441,7 @@ pub struct WorkflowConfig {
     pub runner: RunnerPreset,
     pub timeout_minutes: u32,
     pub permissions: WorkflowPermissionConfig,
+    pub action_ref: String,
     pub setup_wizard_enabled: bool,
     pub setup_workflow_dispatch_inputs_enabled: bool,
 }
@@ -451,6 +452,7 @@ impl Default for WorkflowConfig {
             runner: RunnerPreset::UbuntuLatest,
             timeout_minutes: 45,
             permissions: WorkflowPermissionConfig::default(),
+            action_ref: "samfinton/forksync@main".to_string(),
             setup_wizard_enabled: true,
             setup_workflow_dispatch_inputs_enabled: true,
         }
@@ -739,6 +741,7 @@ mod tests {
         assert_eq!(config.agent.credential_mode, AgentCredentialMode::None);
         assert_eq!(config.agent.prompt_profile, PromptProfile::Reckless);
         assert_eq!(config.auth.upstream_auth.mode, UpstreamAuthMode::Anonymous);
+        assert_eq!(config.workflow.action_ref, "samfinton/forksync@main");
         assert!(config.safety.allow_force_push_output_branch);
     }
 

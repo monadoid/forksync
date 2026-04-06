@@ -179,27 +179,19 @@ pub fn generate_sync_workflow(config: &RepoConfig) -> GeneratedWorkflow {
     contents.push_str("        uses: actions/checkout@v4\n");
     contents.push_str("        with:\n");
     contents.push_str("          fetch-depth: 0\n");
-    contents.push_str("      - name: Set up Rust toolchain\n");
-    contents.push_str("        uses: dtolnay/rust-toolchain@stable\n");
-    contents.push_str("      - name: Bootstrap ForkSync runtime dependencies\n");
-    contents.push_str("        shell: bash\n");
-    contents.push_str("        run: |\n");
-    contents.push_str("          set -euo pipefail\n");
-    contents.push_str("          cargo --version\n");
-    contents.push_str("          git --version\n");
-    if config.agent.enabled && config.agent.provider == AgentProvider::OpenCode {
-        contents.push_str("          if ! command -v opencode >/dev/null 2>&1; then\n");
-        contents.push_str("            curl -fsSL https://opencode.ai/install | bash\n");
-        contents.push_str("          fi\n");
-        contents.push_str("          opencode --version\n");
-    }
-    contents.push_str("      - name: Build ForkSync\n");
-    contents.push_str("        shell: bash\n");
-    contents.push_str("        run: |\n");
-    contents.push_str("          cargo build --release --bin forksync --locked\n");
-    contents.push_str("      - name: Run ForkSync\n");
-    contents.push_str("        run: |\n");
-    contents.push_str("          ./target/release/forksync sync --trigger schedule\n");
+    contents.push_str("      - name: Run ForkSync action\n");
+    let _ = writeln!(contents, "        uses: {}", config.workflow.action_ref);
+    contents.push_str("        with:\n");
+    contents.push_str("          trigger: schedule\n");
+    let _ = writeln!(
+        contents,
+        "          install-opencode: {}",
+        if config.agent.enabled && config.agent.provider == AgentProvider::OpenCode {
+            "true"
+        } else {
+            "false"
+        }
+    );
 
     let workflow = GeneratedWorkflow {
         path: ".github/workflows/forksync.yml".to_string(),
@@ -259,23 +251,9 @@ mod tests {
         assert!(workflow.contents.contains("name: ForkSync"));
         assert!(workflow.contents.contains("workflow_dispatch"));
         assert!(workflow.contents.contains("cron: '*/15 * * * *'"));
-        assert!(workflow.contents.contains("dtolnay/rust-toolchain@stable"));
-        assert!(
-            workflow
-                .contents
-                .contains("curl -fsSL https://opencode.ai/install | bash")
-        );
-        assert!(workflow.contents.contains("opencode --version"));
-        assert!(
-            workflow
-                .contents
-                .contains("cargo build --release --bin forksync --locked")
-        );
-        assert!(
-            workflow
-                .contents
-                .contains("./target/release/forksync sync --trigger schedule")
-        );
+        assert!(workflow.contents.contains("uses: samfinton/forksync@main"));
+        assert!(workflow.contents.contains("trigger: schedule"));
+        assert!(workflow.contents.contains("install-opencode: true"));
         assert!(workflow.contents.contains("contents: write"));
         assert!(workflow.contents.contains("pull-requests: write"));
     }
@@ -358,11 +336,6 @@ mod tests {
 
         let workflow = generate_sync_workflow(&config);
 
-        assert!(
-            !workflow
-                .contents
-                .contains("curl -fsSL https://opencode.ai/install | bash")
-        );
-        assert!(!workflow.contents.contains("opencode --version"));
+        assert!(workflow.contents.contains("install-opencode: false"));
     }
 }

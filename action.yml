@@ -1,0 +1,50 @@
+name: ForkSync
+description: Keep a fork synced with upstream automatically.
+
+inputs:
+  trigger:
+    description: Trigger source passed through to `forksync sync --trigger`.
+    required: false
+    default: schedule
+  config-path:
+    description: Path to the ForkSync config file, relative to the target repository root.
+    required: false
+    default: .forksync.yml
+  working-directory:
+    description: Working directory inside the target repository where ForkSync should run.
+    required: false
+    default: .
+  install-opencode:
+    description: Whether to install OpenCode automatically when it is missing.
+    required: false
+    default: "true"
+  verbose:
+    description: Enable verbose CLI logging.
+    required: false
+    default: "false"
+  json-logs:
+    description: Enable JSON-formatted CLI logs.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+    - name: Bootstrap ForkSync runtime
+      shell: bash
+      env:
+        FORKSYNC_INSTALL_OPENCODE: ${{ inputs.install-opencode }}
+      run: |
+        bash "$GITHUB_ACTION_PATH/scripts/bootstrap_action_runtime.sh"
+    - name: Run ForkSync sync
+      shell: bash
+      env:
+        FORKSYNC_TRIGGER: ${{ inputs.trigger }}
+        FORKSYNC_CONFIG_PATH: ${{ inputs.config-path }}
+        FORKSYNC_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        FORKSYNC_VERBOSE: ${{ inputs.verbose }}
+        FORKSYNC_JSON_LOGS: ${{ inputs.json-logs }}
+      run: |
+        bash "$GITHUB_ACTION_PATH/scripts/run_action_sync.sh"

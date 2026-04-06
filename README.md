@@ -40,7 +40,7 @@ This repository README is the coordination file for the project. It captures the
 - [x] remote branch publication now uses explicit `--force-with-lease=<ref>:<expect>` plus atomic push semantics
 - [x] `scripts/make_test_repos.sh --auto` demonstrates the end-to-end local conflict flow
 - [x] abstract sync protocol now has a first formal model and Rust-side replay checks
-- [x] generated workflow now bootstraps the Rust toolchain and installs OpenCode automatically when needed
+- [x] a root composite GitHub Action now exists and builds/runs ForkSync against the checked-out repo
 - [x] `forksync init` can capture explicit build/test validation commands without hand-editing config
 - [x] validation modes `build_only`, `build_and_tests`, and `custom` now run locally
 - [x] standing conflict reporting now standardizes on the fixed branch name `forksync/conflicts`
@@ -50,8 +50,8 @@ This repository README is the coordination file for the project. It captures the
 
 - [ ] validation timeout handling is not implemented yet
 - [ ] failure PR reuse is still not implemented end to end, but deterministic payload rendering plus best-effort engine reporting hooks now exist
-- [ ] the generated workflow now builds and runs a release binary directly, but it is not yet a published GitHub Action release
-- [ ] the generated workflow now bootstraps Rust, installs OpenCode, and builds the release binary, but GitHub-hosted runner packaging is not proven end to end yet
+- [ ] the generated workflow now calls a real ForkSync Action, but it is not yet a published, versioned GitHub Action release
+- [ ] the ForkSync Action now bootstraps Rust, installs OpenCode, and builds the release binary, but GitHub-hosted runner packaging is not proven end to end yet
 - [ ] GitHub-side auth-failure and infra-failure coverage are still thin
 - [ ] commits on `main` that mix managed files with normal files still replay too coarsely and need path-aware filtering
 
@@ -60,10 +60,10 @@ This repository README is the coordination file for the project. It captures the
 - [x] ForkSync currently uses OpenCode as the default agent backend
 - [x] the default model is `opencode/gpt-5-nano`
 - [x] the current local implementation expects an `opencode` binary to be available either on `PATH` or at `~/.opencode/bin/opencode`
-- [x] the generated GitHub workflow now installs OpenCode automatically when the selected agent path requires it
+- [x] the generated ForkSync Action now installs OpenCode automatically when the selected agent path requires it
 - [x] CLI, engine, git, state, config, agent, and workflow-generation paths now emit structured `tracing` events and can export OTLP data when `OTEL_EXPORTER_OTLP_ENDPOINT` is configured
 - [x] focused engine coverage now exists for auth-failure and infra-failure sync paths
-- [x] ForkSync now installs OpenCode automatically on GitHub runners when the selected workflow path needs it
+- [x] ForkSync now installs OpenCode automatically on GitHub runners when the selected action path needs it
 - [ ] ForkSync does not yet bundle an agent runtime inside the GitHub Action package
 - [ ] we have not yet locked the long-term fallback plan if OpenCode free built-in models disappear or change materially
 
@@ -659,8 +659,9 @@ Definition of done for a feature:
   - [x] workflow_dispatch trigger
   - [x] permissions block
   - [x] concurrency group
-  - [x] CLI invocation placeholder
+  - [x] Action invocation path
 - [x] Add generated workflow outputs
+- [x] Add root composite GitHub Action metadata
 - [x] Add `scripts/run_act.sh`
 - [ ] TDD scope
   - [x] Workflow generation tests
