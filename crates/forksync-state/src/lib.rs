@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+use tracing::{debug, instrument};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(default)]
@@ -90,8 +91,10 @@ impl FileStateStore {
 }
 
 impl StateStore for FileStateStore {
+    #[instrument(skip_all, fields(path = %self.path.display()))]
     fn load(&self) -> Result<PersistedState, StateError> {
         if !self.path.exists() {
+            debug!("state file missing, using default state");
             return Ok(PersistedState::default());
         }
 
@@ -100,12 +103,15 @@ impl StateStore for FileStateStore {
             source,
         })?;
 
-        serde_yaml::from_str(&contents).map_err(|source| StateError::Parse {
+        let state = serde_yaml::from_str(&contents).map_err(|source| StateError::Parse {
             path: self.path.clone(),
             source,
-        })
+        })?;
+        debug!("loaded persisted state");
+        Ok(state)
     }
 
+    #[instrument(skip_all, fields(path = %self.path.display(), history_len = state.history.len()))]
     fn save(&self, state: &PersistedState) -> Result<(), StateError> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).map_err(|source| StateError::CreateDir {
@@ -122,7 +128,9 @@ impl StateStore for FileStateStore {
         fs::write(&self.path, rendered).map_err(|source| StateError::Write {
             path: self.path.clone(),
             source,
-        })
+        })?;
+        debug!("saved persisted state");
+        Ok(())
     }
 }
 

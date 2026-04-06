@@ -2,6 +2,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use thiserror::Error;
+use tracing::{debug, instrument};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteSpec {
@@ -161,6 +162,7 @@ pub trait GitBackend: Send + Sync {
 pub struct SystemGitBackend;
 
 impl SystemGitBackend {
+    #[instrument(skip_all, fields(repo_path = %repo_path.display()))]
     fn run_git<I, S>(&self, repo_path: &Path, args: I) -> Result<String, GitError>
     where
         I: IntoIterator<Item = S>,
@@ -168,6 +170,7 @@ impl SystemGitBackend {
     {
         let args_vec: Vec<_> = args.into_iter().collect();
         let command = render_command(repo_path, &args_vec);
+        debug!(command = %command, "running git command");
         let output = Command::new("git")
             .arg("-C")
             .arg(repo_path)
@@ -186,6 +189,10 @@ impl SystemGitBackend {
             });
         }
 
+        debug!(
+            status = output.status.code().unwrap_or_default(),
+            "git command completed"
+        );
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 }

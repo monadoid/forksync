@@ -6,6 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 use thiserror::Error;
+use tracing::{debug, instrument, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepairTrigger {
@@ -120,6 +121,7 @@ where
         self.backend.provider()
     }
 
+    #[instrument(skip_all, fields(repo_path = %request.repo_path.display(), trigger = ?request.trigger, provider = ?self.backend.provider()))]
     fn repair(&self, request: &AgentRepairRequest) -> Result<AgentRepairResult, AgentError> {
         let max_steps = self.config.max_attempts.max(1);
         let mut tool_results = Vec::new();
@@ -165,6 +167,7 @@ where
             let tool_call = match parse_tool_call(&raw_response) {
                 Ok(tool_call) => tool_call,
                 Err(error) => {
+                    warn!(error = %error, "agent returned an invalid tool call");
                     tool_results.push(format!("Tool error: {error}"));
                     continue;
                 }
@@ -214,6 +217,7 @@ impl ModelBackend for OpenCodeBackend {
         AgentProvider::OpenCode
     }
 
+    #[instrument(skip_all, fields(provider = "opencode"))]
     fn complete(&self, config: &AgentConfig, prompt: &str) -> Result<String, AgentError> {
         let scratch = TempDir::new().map_err(|source| AgentError::CreateTempDir { source })?;
         let opencode_binary = resolve_opencode_binary();
@@ -248,6 +252,11 @@ impl ModelBackend for OpenCodeBackend {
                 command: rendered_command.clone(),
                 source,
             })?;
+        debug!(
+            command = %rendered_command,
+            status = output.status.code().unwrap_or(-1),
+            "completed OpenCode invocation"
+        );
 
         if !output.status.success() {
             return Err(AgentError::CommandFailed {
@@ -272,6 +281,7 @@ impl ModelBackend for OpenCodeBackend {
             .collect::<Vec<_>>();
 
         if text_parts.is_empty() {
+            warn!("OpenCode response did not contain any text parts");
             return Err(AgentError::MissingTextResponse);
         }
 

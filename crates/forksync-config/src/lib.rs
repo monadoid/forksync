@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+use tracing::{debug, instrument};
 
 pub const DEFAULT_CONFIG_PATH: &str = ".forksync.yml";
 pub const DEFAULT_WORKFLOW_PATH: &str = ".github/workflows/forksync.yml";
@@ -100,18 +101,22 @@ pub fn to_yaml_string(config: &RepoConfig) -> Result<String, serde_yaml::Error> 
     serde_yaml::to_string(config)
 }
 
+#[instrument(skip_all, fields(path = %path.as_ref().display()))]
 pub fn load_from_path(path: impl AsRef<Path>) -> Result<RepoConfig, ConfigIoError> {
     let path = path.as_ref();
     let contents = fs::read_to_string(path).map_err(|source| ConfigIoError::Read {
         path: path.to_path_buf(),
         source,
     })?;
-    from_yaml_str(&contents).map_err(|source| ConfigIoError::Parse {
+    let config = from_yaml_str(&contents).map_err(|source| ConfigIoError::Parse {
         path: path.to_path_buf(),
         source,
-    })
+    })?;
+    debug!("loaded ForkSync config");
+    Ok(config)
 }
 
+#[instrument(skip_all, fields(path = %path.as_ref().display()))]
 pub fn write_to_path(path: impl AsRef<Path>, config: &RepoConfig) -> Result<(), ConfigIoError> {
     let path = path.as_ref();
 
@@ -130,7 +135,9 @@ pub fn write_to_path(path: impl AsRef<Path>, config: &RepoConfig) -> Result<(), 
     fs::write(path, rendered).map_err(|source| ConfigIoError::Write {
         path: path.to_path_buf(),
         source,
-    })
+    })?;
+    debug!("wrote ForkSync config");
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

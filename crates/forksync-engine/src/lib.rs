@@ -15,6 +15,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use thiserror::Error;
+use tracing::{info, instrument, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitRequest {
@@ -225,6 +226,7 @@ where
         }
     }
 
+    #[instrument(skip_all, fields(repo_path = %request.repo_path.display()))]
     pub fn init(&self, request: &InitRequest) -> Result<InitReport, EngineError> {
         self.git.ensure_repo(&request.repo_path)?;
 
@@ -239,6 +241,7 @@ where
         }
 
         let upstream_remote = self.resolve_upstream_remote(request)?;
+        info!(upstream_remote = %upstream_remote, "bootstrapping repository with ForkSync");
         self.git.fetch_remote(
             &request.repo_path,
             &RemoteSpec {
@@ -440,6 +443,7 @@ where
         })
     }
 
+    #[instrument(skip_all, fields(repo_path = %request.repo_path.display(), trigger = ?request.trigger))]
     pub fn sync(&self, request: &SyncRequest) -> Result<SyncReport, EngineError> {
         self.git.ensure_repo(&request.repo_path)?;
         let _sync_lock = RepoSyncLock::try_acquire(
@@ -452,6 +456,10 @@ where
         }
 
         if !request.disable_validation && request.config.validation.mode != ValidationMode::None {
+            warn!(
+                mode = ?request.config.validation.mode,
+                "validation mode configured but not yet implemented"
+            );
             return Err(EngineError::UnsupportedValidation(
                 request.config.validation.mode,
             ));
@@ -466,6 +474,11 @@ where
                 name: remote_name.clone(),
             },
         )?;
+        info!(
+            remote_name = %remote_name,
+            branch = %request.config.upstream.branch,
+            "fetched upstream state"
+        );
 
         let origin_exists = self.git.remote_exists(&request.repo_path, "origin")?;
         let observed_remote_live_sha = if !request.dry_run && origin_exists {
@@ -513,6 +526,7 @@ where
             && state.last_processed_upstream_sha.as_deref() == Some(upstream_sha.as_str())
             && author_commits.is_empty()
         {
+            info!(upstream_sha = %upstream_sha, "sync exited early with no changes");
             return Ok(SyncReport {
                 outcome: SyncOutcome::NoChange,
                 used_agent: false,
@@ -722,6 +736,7 @@ where
             }
             self.git
                 .push_leased_ref_updates(&request.repo_path, "origin", &remote_updates)?;
+            info!(ref_count = remote_updates.len(), "published managed refs to origin");
         }
 
         if !request.dry_run {
@@ -767,12 +782,20 @@ where
         });
         self.state.save(&state)?;
 
+        let outcome = if used_agent {
+            SyncOutcome::SyncedAgentic
+        } else {
+            SyncOutcome::SyncedDeterministic
+        };
+        info!(
+            outcome = ?outcome,
+            used_agent,
+            patch_commits_applied = applied_commit_count,
+            "sync completed"
+        );
+
         Ok(SyncReport {
-            outcome: if used_agent {
-                SyncOutcome::SyncedAgentic
-            } else {
-                SyncOutcome::SyncedDeterministic
-            },
+            outcome,
             used_agent,
             upstream_sha: Some(upstream_sha),
             patch_commits_applied: applied_commit_count,
@@ -809,6 +832,12 @@ where
         notes: Vec<String>,
         abort_cherry_pick: bool,
     ) -> Result<SyncReport, EngineError> {
+        warn!(
+            upstream_sha = %upstream_sha,
+            patch_commits_applied,
+            abort_cherry_pick,
+            "sync failed in agent repair path"
+        );
         if abort_cherry_pick {
             let _ = self.git.abort_cherry_pick(repo_path);
         }

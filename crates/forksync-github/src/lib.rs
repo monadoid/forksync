@@ -1,6 +1,7 @@
 use forksync_config::{PermissionLevel, RepoConfig, RunnerPreset, TriggerMode};
 use std::fmt::Write as _;
 use thiserror::Error;
+use tracing::{debug, instrument};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailureSummary {
@@ -56,6 +57,7 @@ pub struct GeneratedWorkflow {
     pub contents: String,
 }
 
+#[instrument(skip_all, fields(output_branch = %config.branches.output))]
 pub fn generate_sync_workflow(config: &RepoConfig) -> GeneratedWorkflow {
     let mut contents = String::new();
 
@@ -126,19 +128,30 @@ pub fn generate_sync_workflow(config: &RepoConfig) -> GeneratedWorkflow {
     contents.push_str("        uses: actions/checkout@v4\n");
     contents.push_str("        with:\n");
     contents.push_str("          fetch-depth: 0\n");
+    contents.push_str("      - name: Set up Rust toolchain\n");
+    contents.push_str("        uses: dtolnay/rust-toolchain@stable\n");
+    contents.push_str("      - name: Bootstrap ForkSync runtime dependencies\n");
+    contents.push_str("        shell: bash\n");
+    contents.push_str("        run: |\n");
+    contents.push_str("          set -euo pipefail\n");
+    contents.push_str("          cargo --version\n");
+    contents.push_str("          git --version\n");
+    contents.push_str("          if ! command -v opencode >/dev/null 2>&1; then\n");
+    contents.push_str("            echo \"OpenCode is required for agentic repair in v1.\"\n");
+    contents.push_str("            echo \"Install opencode or make it available on PATH before running ForkSync.\"\n");
+    contents.push_str("            exit 1\n");
+    contents.push_str("          fi\n");
+    contents.push_str("          opencode --version || true\n");
     contents.push_str("      - name: Run ForkSync\n");
     contents.push_str("        run: |\n");
-    contents.push_str(
-        "          echo \"Replace this placeholder with the published ForkSync action or installer once available.\"\n",
-    );
-    contents.push_str(
-        "          echo \"Local dogfood uses the CLI directly: forksync sync --trigger schedule\"\n",
-    );
+    contents.push_str("          cargo run --quiet --bin forksync -- sync --trigger schedule\n");
 
-    GeneratedWorkflow {
+    let workflow = GeneratedWorkflow {
         path: ".github/workflows/forksync.yml".to_string(),
         contents,
-    }
+    };
+    debug!("generated ForkSync workflow contents");
+    workflow
 }
 
 fn render_permission(permission: PermissionLevel) -> &'static str {
@@ -173,6 +186,17 @@ mod tests {
         assert!(workflow.contents.contains("name: ForkSync"));
         assert!(workflow.contents.contains("workflow_dispatch"));
         assert!(workflow.contents.contains("cron: '*/15 * * * *'"));
+        assert!(workflow.contents.contains("dtolnay/rust-toolchain@stable"));
+        assert!(
+            workflow
+                .contents
+                .contains("OpenCode is required for agentic repair in v1.")
+        );
+        assert!(
+            workflow
+                .contents
+                .contains("cargo run --quiet --bin forksync -- sync --trigger schedule")
+        );
         assert!(workflow.contents.contains("contents: write"));
         assert!(workflow.contents.contains("pull-requests: write"));
     }

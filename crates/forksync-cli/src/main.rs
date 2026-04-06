@@ -1,3 +1,5 @@
+mod telemetry;
+
 use anyhow::{Context, Result, anyhow};
 use clap::{ArgAction, Args, Parser, Subcommand};
 use dotenvy::from_path_override;
@@ -15,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::thread::sleep;
 use std::time::Duration;
+use tracing::{debug, info, instrument};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -195,13 +198,20 @@ pub enum RegistryCommand {
     List,
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let _telemetry = telemetry::init_telemetry(cli.verbose, cli.json_logs)?;
     let repo_path = std::env::current_dir().context("resolve current directory")?;
     let _ = from_path_override(repo_path.join(".env"));
     let config_path = resolve_path(&repo_path, &cli.config);
+    debug!(
+        repo_path = %repo_path.display(),
+        config_path = %config_path.display(),
+        "resolved CLI paths"
+    );
 
-    match cli.command {
+    let result = match cli.command {
         Command::Init(args) => run_init(&repo_path, &config_path, args),
         Command::Sync(args) => run_sync(&repo_path, &config_path, args),
         Command::Validate(args) => run_validate(&repo_path, &config_path, args),
@@ -211,9 +221,17 @@ fn main() -> Result<()> {
         Command::Dev(args) => run_dev(&repo_path, args),
         Command::Rollback(_) => Err(anyhow!("rollback is not implemented yet")),
         Command::Registry(_) => Err(anyhow!("registry commands are not implemented yet")),
+    };
+
+    match &result {
+        Ok(()) => info!("command completed successfully"),
+        Err(error) => tracing::error!(error = %error, "command failed"),
     }
+
+    result
 }
 
+#[instrument(skip_all, fields(repo_path = %repo_path.display(), config_path = %config_path.display()))]
 fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> {
     let workflow_path = repo_path.join(DEFAULT_WORKFLOW_PATH);
     let state_path = default_state_file_path(repo_path, &RepoConfig::default());
@@ -238,6 +256,12 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
         upstream_repo: args.upstream_repo,
         upstream_branch: args.upstream_branch,
     })?;
+    info!(
+        upstream_remote = %report.upstream_remote,
+        upstream_branch = %report.upstream_branch,
+        bootstrap_commit = %report.bootstrap_commit_sha,
+        "initialized ForkSync repository"
+    );
 
     println!("Initialized ForkSync in {}", repo_path.display());
     println!(
@@ -284,6 +308,7 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
     Ok(())
 }
 
+#[instrument(skip_all, fields(repo_path = %repo_path.display(), config_path = %config_path.display()))]
 fn run_sync(repo_path: &Path, config_path: &Path, args: SyncArgs) -> Result<()> {
     let config = load_repo_config(config_path)?;
     let workflow_path = repo_path.join(DEFAULT_WORKFLOW_PATH);
@@ -307,6 +332,13 @@ fn run_sync(repo_path: &Path, config_path: &Path, args: SyncArgs) -> Result<()> 
         disable_validation: args.no_validate,
         upstream_sha: args.upstream_sha,
     })?;
+    info!(
+        outcome = ?report.outcome,
+        used_agent = report.used_agent,
+        patch_commits_applied = report.patch_commits_applied,
+        upstream_sha = report.upstream_sha.as_deref().unwrap_or("<none>"),
+        "sync completed"
+    );
 
     println!("Sync outcome: {:?}", report.outcome);
     if let Some(upstream_sha) = report.upstream_sha {
@@ -320,6 +352,7 @@ fn run_sync(repo_path: &Path, config_path: &Path, args: SyncArgs) -> Result<()> 
     Ok(())
 }
 
+#[instrument(skip_all, fields(repo_path = %repo_path.display(), config_path = %config_path.display()))]
 fn run_validate(repo_path: &Path, config_path: &Path, args: ValidateArgs) -> Result<()> {
     let _config = load_repo_config(config_path)?;
     if args.git_state {
@@ -329,6 +362,7 @@ fn run_validate(repo_path: &Path, config_path: &Path, args: ValidateArgs) -> Res
     Ok(())
 }
 
+#[instrument(skip_all, fields(config_path = %config_path.display()))]
 fn run_print_config(config_path: &Path, args: PrintConfigArgs) -> Result<()> {
     let config = load_repo_config(config_path)?;
     if args.json {
@@ -367,11 +401,13 @@ fn run_generate_workflow(
     }
     std::fs::write(&workflow_path, workflow.contents)
         .with_context(|| format!("write workflow to {}", workflow_path.display()))?;
+    info!(workflow_path = %workflow_path.display(), "generated workflow file");
 
     println!("Generated workflow at {}", workflow_path.display());
     Ok(())
 }
 
+#[instrument(skip_all, fields(repo_path = %repo_path.display(), config_path = %config_path.display()))]
 fn run_status(repo_path: &Path, config_path: &Path, args: StatusArgs) -> Result<()> {
     let config = load_repo_config(config_path)?;
     let state_path = default_state_file_path(repo_path, &config);
@@ -402,6 +438,7 @@ fn run_status(repo_path: &Path, config_path: &Path, args: StatusArgs) -> Result<
     Ok(())
 }
 
+#[instrument(skip_all, fields(repo_path = %repo_path.display()))]
 fn run_dev(repo_path: &Path, args: DevArgs) -> Result<()> {
     match args.command {
         DevCommand::Demo(args) => run_dev_demo(repo_path, args),
@@ -418,6 +455,7 @@ struct DevDemoPaths {
     user_repo: PathBuf,
 }
 
+#[instrument(skip_all, fields(repo_root = %repo_root.display(), dest = %args.dest))]
 fn run_dev_demo(repo_root: &Path, args: DevDemoArgs) -> Result<()> {
     let paths = create_dev_demo_repos(repo_root, &args.dest)?;
 
@@ -463,6 +501,7 @@ fn run_dev_demo(repo_root: &Path, args: DevDemoArgs) -> Result<()> {
     Ok(())
 }
 
+#[instrument(skip_all, fields(repo_root = %repo_root.display(), dest = %args.dest, docker = args.docker))]
 fn run_dev_act(repo_root: &Path, args: DevActArgs) -> Result<()> {
     ensure_act_installed()?;
 
@@ -490,6 +529,7 @@ fn run_dev_act(repo_root: &Path, args: DevActArgs) -> Result<()> {
         "Running ForkSync act workflow in {} mode.",
         if args.docker { "docker" } else { "host" }
     );
+    info!(docker = args.docker, "starting local act workflow");
 
     let mut command = ProcessCommand::new("act");
     command.current_dir(repo_root);

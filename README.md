@@ -46,11 +46,10 @@ This repository README is the coordination file for the project. It captures the
 
 - [ ] validation modes beyond `none` are not implemented yet
 - [ ] failure PR reuse and GitHub-side failure surfaces are not implemented yet
-- [ ] the generated workflow is still a local-development placeholder, not a published GitHub Action release
-- [ ] local sync success is proven; GitHub-hosted runner packaging and automatic OpenCode installation are not
+- [ ] the generated workflow still runs the CLI directly and is not yet a published GitHub Action release
+- [ ] the generated workflow now bootstraps Rust and validates `opencode`, but GitHub-hosted runner packaging and automatic OpenCode installation are not proven yet
 - [ ] GitHub-side auth-failure and infra-failure coverage are still thin
 - [ ] changing managed config on `main` currently replays as a user patch and can conflict with refreshed managed files
-- [ ] logging is still mostly ad hoc prints; move CLI, engine, and Action paths onto `tracing` with structured logs and an OpenTelemetry-friendly sink model before release
 
 ## Current Dependency Assumptions
 
@@ -58,6 +57,8 @@ This repository README is the coordination file for the project. It captures the
 - [x] the default model is `opencode/gpt-5-nano`
 - [x] the current local implementation expects an `opencode` binary to be available either on `PATH` or at `~/.opencode/bin/opencode`
 - [x] the generated GitHub workflow now checks for `opencode` and fails fast if it is absent
+- [x] CLI, engine, git, state, config, agent, and workflow-generation paths now emit structured `tracing` events and can export OTLP data when `OTEL_EXPORTER_OTLP_ENDPOINT` is configured
+- [x] focused engine coverage now exists for auth-failure and infra-failure sync paths
 - [ ] ForkSync does not yet install OpenCode automatically on GitHub runners
 - [ ] ForkSync does not yet bundle an agent runtime inside the GitHub Action package
 - [ ] we have not yet locked the long-term fallback plan if OpenCode free built-in models disappear or change materially

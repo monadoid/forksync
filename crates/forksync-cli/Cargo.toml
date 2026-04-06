@@ -20,6 +20,14 @@ forksync-git = { path = "../forksync-git" }
 forksync-github = { path = "../forksync-github" }
 forksync-state = { path = "../forksync-state" }
 serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-opentelemetry.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry-appender-tracing.workspace = true
 
 [dev-dependencies]
 fs4.workspace = true
