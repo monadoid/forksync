@@ -178,6 +178,7 @@ pub struct DevArgs {
 pub enum DevCommand {
     Demo(DevDemoArgs),
     Act(DevActArgs),
+    Init(DevInitArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -208,6 +209,12 @@ pub struct DevActArgs {
 
     #[arg(long, default_value_t = false, hide = true)]
     pub pull: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct DevInitArgs {
+    #[arg(long, default_value = "init-demo", hide = true)]
+    pub dest: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -553,6 +560,7 @@ fn run_dev(repo_path: &Path, args: DevArgs) -> Result<()> {
     match args.command {
         DevCommand::Demo(args) => run_dev_demo(repo_path, args),
         DevCommand::Act(args) => run_dev_act(repo_path, args),
+        DevCommand::Init(args) => run_dev_init(repo_path, args),
     }
 }
 
@@ -668,6 +676,42 @@ fn run_dev_act(repo_root: &Path, args: DevActArgs) -> Result<()> {
             output.status.code().unwrap_or(-1)
         ));
     }
+
+    Ok(())
+}
+
+#[instrument(skip_all, fields(repo_root = %repo_root.display(), dest = %args.dest))]
+fn run_dev_init(repo_root: &Path, args: DevInitArgs) -> Result<()> {
+    let paths = create_dev_demo_repos(repo_root, &args.dest)?;
+    let binary_path = std::env::current_exe().context("resolve forksync binary path")?;
+
+    println!(
+        "Created local ForkSync init sandbox under {}",
+        paths.root.display()
+    );
+    println!("Launching interactive `forksync init` in:");
+    println!("  {}", paths.user_repo.display());
+    println!();
+
+    let status = ProcessCommand::new(&binary_path)
+        .current_dir(&paths.user_repo)
+        .arg("init")
+        .status()
+        .with_context(|| format!("run interactive init in {}", paths.user_repo.display()))?;
+
+    if !status.success() {
+        return Err(anyhow!(
+            "interactive init failed in {} with status {}",
+            paths.user_repo.display(),
+            status.code().unwrap_or(-1)
+        ));
+    }
+
+    println!();
+    println!("Sandbox paths:");
+    println!("  user repo: {}", paths.user_repo.display());
+    println!("  upstream remote: {}", paths.upstream_remote.display());
+    println!("  fork remote: {}", paths.fork_remote.display());
 
     Ok(())
 }
