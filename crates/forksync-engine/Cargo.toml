@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+fs4.workspace = true
 forksync-agent = { path = "../forksync-agent" }
 forksync-config = { path = "../forksync-config" }
 forksync-git = { path = "../forksync-git" }
@@ -13,6 +14,10 @@ forksync-github = { path = "../forksync-github" }
 forksync-state = { path = "../forksync-state" }
 tempfile.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+tla-connect.workspace = true
 
 [lints]
 workspace = true

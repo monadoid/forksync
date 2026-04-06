@@ -38,3 +38,9 @@
 /coverage/
 /junit.xml
 /lcov.info
+
+# Formal verification artifacts
+/_apalache-out/
+/formal/out/
+**/_apalache-out/
+/states/

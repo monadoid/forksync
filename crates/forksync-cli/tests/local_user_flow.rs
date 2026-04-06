@@ -1,6 +1,8 @@
 use forksync_config::from_yaml_str;
+use forksync_engine::default_sync_lock_path;
 use forksync_state::{FileStateStore, StateStore};
-use std::fs;
+use fs4::fs_std::FileExt;
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
@@ -326,6 +328,98 @@ fn sync_from_uninitialized_directory_shows_init_hint() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("no ForkSync config found at"));
     assert!(stderr.contains("Run `forksync init` from the fork repo root first"));
+}
+
+#[test]
+fn sync_fails_fast_when_repo_lock_is_already_held() {
+    let fixture = create_local_fork_fixture();
+
+    let init_output = run_cli(&fixture.user_repo, ["init"]);
+    assert!(
+        init_output.status.success(),
+        "init failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&init_output.stdout),
+        String::from_utf8_lossy(&init_output.stderr)
+    );
+
+    let lock_path = default_sync_lock_path(
+        &fixture.user_repo,
+        &from_yaml_str(&git_output(
+            &fixture.user_repo,
+            ["show", "main:.forksync.yml"],
+        ))
+        .expect("parse generated config"),
+    );
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .expect("open sync lock file");
+    lock_file
+        .try_lock_exclusive()
+        .expect("acquire external repo lock");
+
+    let sync_output = run_cli(
+        &fixture.user_repo,
+        ["sync", "--trigger", "local-debug", "--no-agent"],
+    );
+    assert!(
+        !sync_output.status.success(),
+        "sync unexpectedly succeeded:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&sync_output.stdout),
+        String::from_utf8_lossy(&sync_output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&sync_output.stderr);
+    assert!(stderr.contains("another ForkSync sync is already running"));
+    assert!(stderr.contains(".forksync/state/sync.lock"));
+}
+
+#[test]
+fn sync_releases_repo_lock_after_dirty_worktree_failure() {
+    let fixture = create_local_fork_fixture();
+
+    let init_output = run_cli(&fixture.user_repo, ["init"]);
+    assert!(
+        init_output.status.success(),
+        "init failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&init_output.stdout),
+        String::from_utf8_lossy(&init_output.stderr)
+    );
+
+    fs::write(fixture.user_repo.join("DIRTY.txt"), "uncommitted\n").expect("write dirty file");
+
+    let sync_output = run_cli(
+        &fixture.user_repo,
+        ["sync", "--trigger", "local-debug", "--no-agent"],
+    );
+    assert!(
+        !sync_output.status.success(),
+        "sync unexpectedly succeeded:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&sync_output.stdout),
+        String::from_utf8_lossy(&sync_output.stderr)
+    );
+
+    let lock_path = default_sync_lock_path(
+        &fixture.user_repo,
+        &from_yaml_str(&git_output(
+            &fixture.user_repo,
+            ["show", "main:.forksync.yml"],
+        ))
+        .expect("parse generated config"),
+    );
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .expect("open sync lock file after failure");
+    lock_file
+        .try_lock_exclusive()
+        .expect("lock should be released after dirty-worktree failure");
 }
 
 fn create_local_fork_fixture() -> LocalForkFixture {

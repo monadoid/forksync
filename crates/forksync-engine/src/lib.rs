@@ -8,7 +8,9 @@ use forksync_git::{
 };
 use forksync_github::{FailureReporter, generate_sync_workflow};
 use forksync_state::{PersistedState, RecordedOutcome, RunRecord, StateError, StateStore};
-use std::fs;
+use fs4::fs_std::FileExt;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use thiserror::Error;
@@ -111,6 +113,14 @@ pub enum EngineError {
     DirtyWorktree,
     #[error("validation mode `{0:?}` is not implemented in the local dogfood slice yet")]
     UnsupportedValidation(ValidationMode),
+    #[error("another ForkSync sync is already running for this repository: {lock_path}")]
+    ConcurrentSync { lock_path: PathBuf },
+    #[error("failed to acquire sync lock at {path}: {source}")]
+    AcquireSyncLock {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +128,75 @@ enum BranchUpdateOutcome {
     ResetBackground,
     ResetCheckedOut,
     SkippedCheckedOut,
+}
+
+struct RepoSyncLock {
+    _file: File,
+}
+
+impl RepoSyncLock {
+    fn try_acquire(lock_path: &Path, trigger: Option<TriggerSource>) -> Result<Self, EngineError> {
+        if let Some(parent) = lock_path.parent() {
+            fs::create_dir_all(parent).map_err(|source| EngineError::CreateDir {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path)
+            .map_err(|source| EngineError::AcquireSyncLock {
+                path: lock_path.to_path_buf(),
+                source,
+            })?;
+
+        match file.try_lock_exclusive() {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(EngineError::ConcurrentSync {
+                    lock_path: lock_path.to_path_buf(),
+                });
+            }
+            Err(source) if source.kind() == std::io::ErrorKind::WouldBlock => {
+                return Err(EngineError::ConcurrentSync {
+                    lock_path: lock_path.to_path_buf(),
+                });
+            }
+            Err(source) => {
+                return Err(EngineError::AcquireSyncLock {
+                    path: lock_path.to_path_buf(),
+                    source,
+                });
+            }
+        }
+
+        let trigger_label = trigger
+            .map(|value| format!("{value:?}"))
+            .unwrap_or_else(|| "unspecified".to_string());
+        let lock_metadata = format!("pid={}\ntrigger={}\n", std::process::id(), trigger_label);
+        file.set_len(0)
+            .map_err(|source| EngineError::AcquireSyncLock {
+                path: lock_path.to_path_buf(),
+                source,
+            })?;
+        file.write_all(lock_metadata.as_bytes()).map_err(|source| {
+            EngineError::AcquireSyncLock {
+                path: lock_path.to_path_buf(),
+                source,
+            }
+        })?;
+        file.sync_data()
+            .map_err(|source| EngineError::AcquireSyncLock {
+                path: lock_path.to_path_buf(),
+                source,
+            })?;
+
+        Ok(Self { _file: file })
+    }
 }
 
 pub struct SyncEngine<G, A, S, R> {
@@ -360,6 +439,10 @@ where
 
     pub fn sync(&self, request: &SyncRequest) -> Result<SyncReport, EngineError> {
         self.git.ensure_repo(&request.repo_path)?;
+        let _sync_lock = RepoSyncLock::try_acquire(
+            &default_sync_lock_path(&request.repo_path, &request.config),
+            request.trigger,
+        )?;
 
         if !self.git.worktree_clean(&request.repo_path)? {
             return Err(EngineError::DirtyWorktree);
@@ -852,6 +935,10 @@ pub fn default_state_file_path(repo_path: &std::path::Path, config: &RepoConfig)
     repo_path
         .join(&config.storage.state_dir)
         .join(DEFAULT_STATE_FILE)
+}
+
+pub fn default_sync_lock_path(repo_path: &std::path::Path, config: &RepoConfig) -> PathBuf {
+    repo_path.join(&config.storage.state_dir).join("sync.lock")
 }
 
 fn write_plain_file(path: &PathBuf, contents: &str) -> Result<(), EngineError> {

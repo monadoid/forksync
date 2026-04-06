@@ -1,0 +1,59 @@
+name: Formal Checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  formal-checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install TLC
+        run: |
+          mkdir -p "$HOME/.local/opt/tlaplus" "$HOME/.local/bin"
+          curl -fsSL \
+            -o "$HOME/.local/opt/tlaplus/tla2tools-1.7.4.jar" \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+          cat > "$HOME/.local/bin/tlc" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec java -cp "$HOME/.local/opt/tlaplus/tla2tools-1.7.4.jar" tlc2.TLC "$@"
+          EOF
+          chmod +x "$HOME/.local/bin/tlc"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install Apalache
+        run: |
+          mkdir -p "$HOME/.local/opt/apalache" "$HOME/.local/bin"
+          curl -fsSL \
+            -o "$HOME/.local/opt/apalache/apalache-0.56.1.tgz" \
+            https://github.com/apalache-mc/apalache/releases/download/v0.56.1/apalache.tgz
+          rm -rf "$HOME/.local/opt/apalache/0.56.1"
+          mkdir -p "$HOME/.local/opt/apalache/0.56.1"
+          tar -xzf "$HOME/.local/opt/apalache/apalache-0.56.1.tgz" \
+            -C "$HOME/.local/opt/apalache/0.56.1" \
+            --strip-components=1
+          ln -sf "$HOME/.local/opt/apalache/0.56.1/bin/apalache-mc" "$HOME/.local/bin/apalache-mc"
+          chmod +x "$HOME/.local/bin/apalache-mc"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run ForkSync formal checks
+        run: ./scripts/run_formal_checks.sh

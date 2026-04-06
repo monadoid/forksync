@@ -25,6 +25,7 @@ This repository README is the coordination file for the project. It captures the
   - [x] Main-authoring workflow is implemented locally
   - [x] Agentic conflict repair works locally through OpenCode
   - [x] Narrated local `--auto` demo script exists for repeatable dogfooding
+  - [x] Initial TLA+ core spec and `tla_connect` replay harness added for sync-model checks
 
 ## What Works Today
 
@@ -35,7 +36,9 @@ This repository README is the coordination file for the project. It captures the
 - [x] local deterministic sync works on clean replay paths
 - [x] same-file replay conflicts can be repaired locally through the OpenCode adapter
 - [x] local state persists author-base and run-history data
+- [x] repo-scoped sync locking prevents overlapping local sync runs in the same checkout
 - [x] `scripts/make_test_repos.sh --auto` demonstrates the end-to-end local conflict flow
+- [x] abstract sync protocol now has a first formal model and Rust-side replay checks
 
 ## Current Gaps and Risks
 
@@ -43,8 +46,8 @@ This repository README is the coordination file for the project. It captures the
 - [ ] failure PR reuse and GitHub-side failure surfaces are not implemented yet
 - [ ] the generated workflow is still a local-development placeholder, not a published GitHub Action release
 - [ ] local sync success is proven; GitHub-hosted runner packaging and dependency bootstrapping are not
-- [ ] concurrency locking is not implemented yet
 - [ ] auth-failure and infra-failure coverage are still thin
+- [ ] changing managed config on `main` currently replays as a user patch and can conflict with refreshed managed files
 
 ## Current Dependency Assumptions
 
@@ -722,7 +725,7 @@ Once the setup and local sync paths exist, the first manual demo should look lik
   - [x] `registry` placeholders
 - [ ] Sync behavior
   - [x] effective default resolution
-  - [ ] concurrency lock
+  - [x] concurrency lock
   - [x] upstream fetch
   - [x] dedupe by upstream SHA
   - [x] candidate branch creation

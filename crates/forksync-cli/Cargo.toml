@@ -21,6 +21,7 @@ forksync-state = { path = "../forksync-state" }
 serde_json.workspace = true
 
 [dev-dependencies]
+fs4.workspace = true
 tempfile.workspace = true
 
 [lints]
