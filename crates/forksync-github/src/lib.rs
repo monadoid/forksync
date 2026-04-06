@@ -179,6 +179,17 @@ pub fn generate_sync_workflow(config: &RepoConfig) -> GeneratedWorkflow {
     contents.push_str("        uses: actions/checkout@v4\n");
     contents.push_str("        with:\n");
     contents.push_str("          fetch-depth: 0\n");
+    contents.push_str("      - name: Cache ForkSync action runtime\n");
+    contents.push_str("        uses: actions/cache@v4\n");
+    contents.push_str("        with:\n");
+    contents.push_str("          path: ~/.cache/forksync\n");
+    let _ = writeln!(
+        contents,
+        "          key: ${{{{ runner.os }}}}-forksync-runtime-{}",
+        cache_key_fragment(&config.workflow.action_ref)
+    );
+    contents.push_str("          restore-keys: |\n");
+    contents.push_str("            ${{ runner.os }}-forksync-runtime-\n");
     contents.push_str("      - name: Run ForkSync action\n");
     let _ = writeln!(contents, "        uses: {}", config.workflow.action_ref);
     contents.push_str("        with:\n");
@@ -234,6 +245,13 @@ fn render_failure_body(details: &FailureDetails) -> String {
     body.trim_end().to_string()
 }
 
+fn cache_key_fragment(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,6 +269,8 @@ mod tests {
         assert!(workflow.contents.contains("name: ForkSync"));
         assert!(workflow.contents.contains("workflow_dispatch"));
         assert!(workflow.contents.contains("cron: '*/15 * * * *'"));
+        assert!(workflow.contents.contains("uses: actions/cache@v4"));
+        assert!(workflow.contents.contains("path: ~/.cache/forksync"));
         assert!(workflow.contents.contains("uses: samfinton/forksync@main"));
         assert!(workflow.contents.contains("trigger: schedule"));
         assert!(workflow.contents.contains("install-opencode: true"));
@@ -337,5 +357,13 @@ mod tests {
         let workflow = generate_sync_workflow(&config);
 
         assert!(workflow.contents.contains("install-opencode: false"));
+    }
+
+    #[test]
+    fn cache_key_fragment_sanitizes_action_ref() {
+        assert_eq!(
+            cache_key_fragment("samfinton/forksync@v1.2.3"),
+            "samfinton-forksync-v1-2-3"
+        );
     }
 }

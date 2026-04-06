@@ -26,25 +26,23 @@ inputs:
     description: Enable JSON-formatted CLI logs.
     required: false
     default: "false"
+  binary-path:
+    description: Optional absolute path to a prebuilt ForkSync binary.
+    required: false
+    default: ""
+  binary-version:
+    description: Release tag to download when no local binary path is provided.
+    required: false
+    default: latest
+  allow-build-fallback:
+    description: Allow building ForkSync from source if no prebuilt binary is available.
+    required: false
+    default: "true"
+  action-repository:
+    description: Repository that publishes ForkSync release binaries.
+    required: false
+    default: ""
 
 runs:
-  using: composite
-  steps:
-    - name: Set up Rust toolchain
-      uses: dtolnay/rust-toolchain@stable
-    - name: Bootstrap ForkSync runtime
-      shell: bash
-      env:
-        FORKSYNC_INSTALL_OPENCODE: ${{ inputs.install-opencode }}
-      run: |
-        bash "$GITHUB_ACTION_PATH/scripts/bootstrap_action_runtime.sh"
-    - name: Run ForkSync sync
-      shell: bash
-      env:
-        FORKSYNC_TRIGGER: ${{ inputs.trigger }}
-        FORKSYNC_CONFIG_PATH: ${{ inputs.config-path }}
-        FORKSYNC_WORKING_DIRECTORY: ${{ inputs.working-directory }}
-        FORKSYNC_VERBOSE: ${{ inputs.verbose }}
-        FORKSYNC_JSON_LOGS: ${{ inputs.json-logs }}
-      run: |
-        bash "$GITHUB_ACTION_PATH/scripts/run_action_sync.sh"
+  using: node20
+  main: dist/action.js

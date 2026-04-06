@@ -179,6 +179,9 @@ pub struct DevDemoArgs {
 
     #[arg(long, default_value_t = 1000, hide = true)]
     pub sleep_ms: u64,
+
+    #[arg(long, default_value_t = false, hide = true)]
+    pub pre_sync_only: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -476,7 +479,7 @@ fn run_dev_demo(repo_root: &Path, args: DevDemoArgs) -> Result<()> {
     println!("Fork remote: {}", paths.fork_remote.display());
 
     if args.auto {
-        run_dev_auto_demo(repo_root, &paths, args.sleep_ms)?;
+        run_dev_auto_demo(repo_root, &paths, args.sleep_ms, args.pre_sync_only)?;
     } else {
         println!();
         println!("Suggested local dogfood flow:");
@@ -674,7 +677,12 @@ fn create_dev_demo_repos(repo_root: &Path, dest: &str) -> Result<DevDemoPaths> {
     })
 }
 
-fn run_dev_auto_demo(repo_root: &Path, paths: &DevDemoPaths, sleep_ms: u64) -> Result<()> {
+fn run_dev_auto_demo(
+    repo_root: &Path,
+    paths: &DevDemoPaths,
+    sleep_ms: u64,
+    pre_sync_only: bool,
+) -> Result<()> {
     let binary_path = std::env::current_exe().context("resolve forksync binary path")?;
 
     narrate(
@@ -727,6 +735,19 @@ fn run_dev_auto_demo(repo_root: &Path, paths: &DevDemoPaths, sleep_ms: u64) -> R
         ["commit", "-m", "Upstream readme change"],
     )?;
     git_in(&paths.upstream_working, ["push"])?;
+
+    if pre_sync_only {
+        narrate(
+            "Prepared the local fork and upstream repos through the pre-sync stage.",
+            sleep_ms,
+        );
+        narrate(
+            &format!("User repo ready at {}", paths.user_repo.display()),
+            sleep_ms,
+        );
+        let _ = repo_root;
+        return Ok(());
+    }
 
     narrate(
         "Running 'forksync sync --trigger local-debug' so ForkSync can replay the local change on top of the updated upstream.",
@@ -858,29 +879,41 @@ fn ensure_act_installed() -> Result<()> {
 
 fn prepare_host_act_binary(repo_root: &Path, workflow_dir: &Path) -> Result<String> {
     let _ = workflow_dir;
-    let status = ProcessCommand::new("cargo")
-        .current_dir(repo_root)
-        .args([
-            "build",
-            "--release",
-            "--bin",
-            "forksync",
-            "--quiet",
-            "--locked",
-        ])
-        .status()
-        .context("build forksync binary for host-mode act")?;
-    if !status.success() {
-        return Err(anyhow!(
-            "failed to build forksync binary for host-mode act (status {})",
-            status.code().unwrap_or(-1)
-        ));
+    let binary_path = repo_root.join("target/release/forksync");
+    let rebuild = match (fs::metadata(&binary_path), std::env::current_exe()) {
+        (Ok(binary_meta), Ok(current_exe)) => match fs::metadata(current_exe) {
+            Ok(current_meta) => match (binary_meta.modified(), current_meta.modified()) {
+                (Ok(binary_modified), Ok(current_modified)) => binary_modified < current_modified,
+                _ => false,
+            },
+            Err(_) => false,
+        },
+        (Err(_), _) => true,
+        _ => false,
+    };
+
+    if rebuild {
+        let status = ProcessCommand::new("cargo")
+            .current_dir(repo_root)
+            .args([
+                "build",
+                "--release",
+                "--bin",
+                "forksync",
+                "--quiet",
+                "--locked",
+            ])
+            .status()
+            .context("build forksync binary for host-mode act")?;
+        if !status.success() {
+            return Err(anyhow!(
+                "failed to build forksync binary for host-mode act (status {})",
+                status.code().unwrap_or(-1)
+            ));
+        }
     }
 
-    Ok(repo_root
-        .join("target/release/forksync")
-        .display()
-        .to_string())
+    Ok(binary_path.display().to_string())
 }
 
 fn render_dev_act_workflow(
@@ -889,31 +922,45 @@ fn render_dev_act_workflow(
     docker: bool,
     host_binary_rel_path: Option<&str>,
 ) -> String {
-    let run_block = if docker {
+    let setup_block = if docker {
         format!(
-            "set -euo pipefail\nif ! command -v cargo >/dev/null 2>&1; then\n  apt-get update\n  apt-get install -y curl git build-essential ca-certificates pkg-config libssl-dev\n  curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal\nfi\nif [ -f \"$HOME/.cargo/env\" ]; then . \"$HOME/.cargo/env\"; fi\ncargo build --release --bin forksync --locked --quiet\ntarget/release/forksync dev demo --auto --dest {dest} --sleep-ms {sleep_ms}"
+            "set -euo pipefail\nif ! command -v cargo >/dev/null 2>&1; then\n  apt-get update\n  apt-get install -y curl git build-essential ca-certificates pkg-config libssl-dev\n  curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal\nfi\nif [ -f \"$HOME/.cargo/env\" ]; then . \"$HOME/.cargo/env\"; fi\ncargo build --release --bin forksync --locked --quiet\ntarget/release/forksync dev demo --auto --pre-sync-only --dest {dest} --sleep-ms {sleep_ms}"
         )
     } else {
         let binary_rel_path = host_binary_rel_path.expect("host binary path for host-mode act");
         format!(
-            "set -euo pipefail\n\"{binary_rel_path}\" dev demo --auto --dest {dest} --sleep-ms {sleep_ms}"
+            "set -euo pipefail\n\"{binary_rel_path}\" dev demo --auto --pre-sync-only --dest {dest} --sleep-ms {sleep_ms}"
         )
     };
 
-    let steps = if docker {
+    let action_inputs = if docker {
         format!(
-            "      - name: Checkout repo\n        uses: actions/checkout@v4\n      - name: Run typed ForkSync demo\n        shell: bash\n        run: |\n{}\n",
-            indent_block(&run_block, "          ")
+            "          trigger: local-debug\n          working-directory: sandbox/repos/{dest}/user-repo\n          install-opencode: true\n          allow-build-fallback: true\n"
         )
     } else {
         format!(
-            "      - name: Run typed ForkSync demo\n        shell: bash\n        run: |\n{}\n",
-            indent_block(&run_block, "          ")
+            "          trigger: local-debug\n          working-directory: sandbox/repos/{dest}/user-repo\n          install-opencode: true\n          binary-path: {}\n",
+            host_binary_rel_path.expect("host binary path for host-mode act")
+        )
+    };
+
+    let action_env = if docker {
+        format!(
+            "          INPUT_TRIGGER: local-debug\n          INPUT_WORKING_DIRECTORY: sandbox/repos/{dest}/user-repo\n          INPUT_INSTALL_OPENCODE: true\n          INPUT_ALLOW_BUILD_FALLBACK: true\n"
+        )
+    } else {
+        format!(
+            "          INPUT_TRIGGER: local-debug\n          INPUT_WORKING_DIRECTORY: sandbox/repos/{dest}/user-repo\n          INPUT_INSTALL_OPENCODE: true\n          INPUT_BINARY_PATH: {}\n",
+            host_binary_rel_path.expect("host binary path for host-mode act")
         )
     };
 
     format!(
-        "name: ForkSync Local Dev Demo\n\non:\n  workflow_dispatch:\n\njobs:\n  demo:\n    runs-on: ubuntu-latest\n    defaults:\n      run:\n        working-directory: ${{{{ github.workspace }}}}\n    steps:\n{steps}"
+        "name: ForkSync Local Dev Demo\n\non:\n  workflow_dispatch:\n\njobs:\n  demo:\n    runs-on: ubuntu-latest\n    defaults:\n      run:\n        working-directory: ${{{{ github.workspace }}}}\n    steps:\n      - name: Checkout repo\n        uses: actions/checkout@v4\n      - name: Cache ForkSync action runtime\n        uses: actions/cache@v4\n        with:\n          path: ~/.cache/forksync\n          key: ${{{{ runner.os }}}}-forksync-local-action\n          restore-keys: |\n            ${{{{ runner.os }}}}-forksync-local-\n      - name: Prepare local sync scenario\n        shell: bash\n        run: |\n{setup_block}\n      - name: Run local ForkSync action\n        uses: ./\n        env:\n{action_env}        with:\n{action_inputs}\n      - name: Show final README on main\n        shell: bash\n        run: |\n          git -C sandbox/repos/{dest}/user-repo show main:README.md\n      - name: Show final README on forksync/live\n        shell: bash\n        run: |\n          git -C sandbox/repos/{dest}/user-repo show forksync/live:README.md\n",
+        setup_block = indent_block(&setup_block, "          "),
+        action_env = action_env,
+        action_inputs = action_inputs,
+        dest = dest
     )
 }
 

@@ -40,7 +40,7 @@ This repository README is the coordination file for the project. It captures the
 - [x] remote branch publication now uses explicit `--force-with-lease=<ref>:<expect>` plus atomic push semantics
 - [x] `scripts/make_test_repos.sh --auto` demonstrates the end-to-end local conflict flow
 - [x] abstract sync protocol now has a first formal model and Rust-side replay checks
-- [x] a root composite GitHub Action now exists and builds/runs ForkSync against the checked-out repo
+- [x] a root JavaScript GitHub Action now exists and runs ForkSync from a prebuilt binary when available
 - [x] `forksync init` can capture explicit build/test validation commands without hand-editing config
 - [x] validation modes `build_only`, `build_and_tests`, and `custom` now run locally
 - [x] standing conflict reporting now standardizes on the fixed branch name `forksync/conflicts`
@@ -51,7 +51,7 @@ This repository README is the coordination file for the project. It captures the
 - [ ] validation timeout handling is not implemented yet
 - [ ] failure PR reuse is still not implemented end to end, but deterministic payload rendering plus best-effort engine reporting hooks now exist
 - [ ] the generated workflow now calls a real ForkSync Action, but it is not yet a published, versioned GitHub Action release
-- [ ] the ForkSync Action now bootstraps Rust, installs OpenCode, and builds the release binary, but GitHub-hosted runner packaging is not proven end to end yet
+- [ ] the ForkSync Action now prefers a cached prebuilt binary and only falls back to a source build when no release binary is available; GitHub-hosted runner packaging is not proven end to end yet
 - [ ] GitHub-side auth-failure and infra-failure coverage are still thin
 - [ ] commits on `main` that mix managed files with normal files still replay too coarsely and need path-aware filtering
 
@@ -661,7 +661,7 @@ Definition of done for a feature:
   - [x] concurrency group
   - [x] Action invocation path
 - [x] Add generated workflow outputs
-- [x] Add root composite GitHub Action metadata
+- [x] Add root GitHub Action metadata
 - [x] Add `scripts/run_act.sh`
 - [ ] TDD scope
   - [x] Workflow generation tests
