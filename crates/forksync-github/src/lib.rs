@@ -193,9 +193,13 @@ pub fn generate_sync_workflow(config: &RepoConfig) -> GeneratedWorkflow {
         contents.push_str("          fi\n");
         contents.push_str("          opencode --version\n");
     }
+    contents.push_str("      - name: Build ForkSync\n");
+    contents.push_str("        shell: bash\n");
+    contents.push_str("        run: |\n");
+    contents.push_str("          cargo build --release --bin forksync --locked\n");
     contents.push_str("      - name: Run ForkSync\n");
     contents.push_str("        run: |\n");
-    contents.push_str("          cargo run --quiet --bin forksync -- sync --trigger schedule\n");
+    contents.push_str("          ./target/release/forksync sync --trigger schedule\n");
 
     let workflow = GeneratedWorkflow {
         path: ".github/workflows/forksync.yml".to_string(),
@@ -265,7 +269,12 @@ mod tests {
         assert!(
             workflow
                 .contents
-                .contains("cargo run --quiet --bin forksync -- sync --trigger schedule")
+                .contains("cargo build --release --bin forksync --locked")
+        );
+        assert!(
+            workflow
+                .contents
+                .contains("./target/release/forksync sync --trigger schedule")
         );
         assert!(workflow.contents.contains("contents: write"));
         assert!(workflow.contents.contains("pull-requests: write"));
@@ -279,7 +288,7 @@ mod tests {
             on_failure: FailureNotificationConfig {
                 open_pr: true,
                 reuse_existing_pr: true,
-                pr_branch: "forksync/failure".to_string(),
+                pr_branch: "forksync/conflicts".to_string(),
                 pr_title_prefix: "[ForkSync]".to_string(),
                 pr_labels: vec!["forksync".to_string()],
                 assign_users: vec!["assignee".to_string()],
@@ -296,7 +305,7 @@ mod tests {
             is_first_failure: true,
         };
         let first_payload = build_failure_pr_payload(&config, &first).expect("payload");
-        assert_eq!(first_payload.branch, "forksync/failure");
+        assert_eq!(first_payload.branch, "forksync/conflicts");
         assert_eq!(first_payload.title_prefix, "[ForkSync]");
         assert_eq!(first_payload.labels, vec!["forksync".to_string()]);
         assert_eq!(first_payload.assign_users, vec!["assignee".to_string()]);

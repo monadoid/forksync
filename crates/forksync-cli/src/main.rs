@@ -860,7 +860,14 @@ fn prepare_host_act_binary(repo_root: &Path, workflow_dir: &Path) -> Result<Stri
     let _ = workflow_dir;
     let status = ProcessCommand::new("cargo")
         .current_dir(repo_root)
-        .args(["build", "--bin", "forksync", "--quiet"])
+        .args([
+            "build",
+            "--release",
+            "--bin",
+            "forksync",
+            "--quiet",
+            "--locked",
+        ])
         .status()
         .context("build forksync binary for host-mode act")?;
     if !status.success() {
@@ -871,7 +878,7 @@ fn prepare_host_act_binary(repo_root: &Path, workflow_dir: &Path) -> Result<Stri
     }
 
     Ok(repo_root
-        .join("target/debug/forksync")
+        .join("target/release/forksync")
         .display()
         .to_string())
 }
@@ -884,7 +891,7 @@ fn render_dev_act_workflow(
 ) -> String {
     let run_block = if docker {
         format!(
-            "set -euo pipefail\nif ! command -v cargo >/dev/null 2>&1; then\n  apt-get update\n  apt-get install -y curl git build-essential ca-certificates pkg-config libssl-dev\n  curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal\nfi\nif [ -f \"$HOME/.cargo/env\" ]; then . \"$HOME/.cargo/env\"; fi\ncargo run --quiet --bin forksync -- dev demo --auto --dest {dest} --sleep-ms {sleep_ms}"
+            "set -euo pipefail\nif ! command -v cargo >/dev/null 2>&1; then\n  apt-get update\n  apt-get install -y curl git build-essential ca-certificates pkg-config libssl-dev\n  curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal\nfi\nif [ -f \"$HOME/.cargo/env\" ]; then . \"$HOME/.cargo/env\"; fi\ncargo build --release --bin forksync --locked --quiet\ntarget/release/forksync dev demo --auto --dest {dest} --sleep-ms {sleep_ms}"
         )
     } else {
         let binary_rel_path = host_binary_rel_path.expect("host binary path for host-mode act");

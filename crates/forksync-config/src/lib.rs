@@ -376,7 +376,7 @@ impl Default for FailureNotificationConfig {
         Self {
             open_pr: true,
             reuse_existing_pr: true,
-            pr_branch: "forksync/failure".to_string(),
+            pr_branch: "forksync/conflicts".to_string(),
             pr_title_prefix: "[ForkSync]".to_string(),
             pr_labels: vec!["forksync".to_string(), "sync-failure".to_string()],
             assign_users: Vec::new(),

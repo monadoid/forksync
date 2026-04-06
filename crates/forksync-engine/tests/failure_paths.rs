@@ -108,7 +108,7 @@ fn sync_reports_failure_payload_when_validation_fails() {
     );
     let payload = reporter.payloads();
     assert_eq!(payload.len(), 1);
-    assert_eq!(payload[0].branch, "forksync/failure");
+    assert_eq!(payload[0].branch, "forksync/conflicts");
     assert_eq!(payload[0].summary.outcome, "FailedValidation");
     assert!(
         payload[0]
@@ -151,7 +151,7 @@ fn sync_reports_validation_failure_to_failure_reporter() {
     );
     assert_eq!(reporter.payloads().len(), 1);
     let payload = &reporter.payloads()[0];
-    assert_eq!(payload.branch, "forksync/failure");
+    assert_eq!(payload.branch, "forksync/conflicts");
     assert_eq!(payload.summary.outcome, "FailedValidation");
     assert!(
         payload

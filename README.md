@@ -43,13 +43,15 @@ This repository README is the coordination file for the project. It captures the
 - [x] generated workflow now bootstraps the Rust toolchain and installs OpenCode automatically when needed
 - [x] `forksync init` can capture explicit build/test validation commands without hand-editing config
 - [x] validation modes `build_only`, `build_and_tests`, and `custom` now run locally
+- [x] standing conflict reporting now standardizes on the fixed branch name `forksync/conflicts`
+- [x] generated workflow and local `act` harness now run a built release binary instead of `cargo run`
 
 ## Current Gaps and Risks
 
 - [ ] validation timeout handling is not implemented yet
 - [ ] failure PR reuse is still not implemented end to end, but deterministic payload rendering plus best-effort engine reporting hooks now exist
-- [ ] the generated workflow still runs the CLI directly and is not yet a published GitHub Action release
-- [ ] the generated workflow now bootstraps Rust and installs OpenCode, but GitHub-hosted runner packaging is not proven end to end yet
+- [ ] the generated workflow now builds and runs a release binary directly, but it is not yet a published GitHub Action release
+- [ ] the generated workflow now bootstraps Rust, installs OpenCode, and builds the release binary, but GitHub-hosted runner packaging is not proven end to end yet
 - [ ] GitHub-side auth-failure and infra-failure coverage are still thin
 - [ ] commits on `main` that mix managed files with normal files still replay too coarsely and need path-aware filtering
 
@@ -756,7 +758,7 @@ Once the setup and local sync paths exist, the first manual demo should look lik
   - [x] output branch update
   - [x] state persistence
 - [ ] Failure handling
-  - [ ] standing failure branch policy
+  - [x] standing failure branch policy
   - [ ] standing failure PR reuse
   - [x] structured summary generation
   - [ ] artifact/log hooks
