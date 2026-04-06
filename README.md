@@ -40,14 +40,15 @@ This repository README is the coordination file for the project. It captures the
 - [x] remote branch publication now uses explicit `--force-with-lease=<ref>:<expect>` plus atomic push semantics
 - [x] `scripts/make_test_repos.sh --auto` demonstrates the end-to-end local conflict flow
 - [x] abstract sync protocol now has a first formal model and Rust-side replay checks
+- [x] generated workflow now bootstraps the Rust toolchain and fails fast if OpenCode is missing
 
 ## Current Gaps and Risks
 
 - [ ] validation modes beyond `none` are not implemented yet
 - [ ] failure PR reuse and GitHub-side failure surfaces are not implemented yet
 - [ ] the generated workflow is still a local-development placeholder, not a published GitHub Action release
-- [ ] local sync success is proven; GitHub-hosted runner packaging and dependency bootstrapping are not
-- [ ] auth-failure and infra-failure coverage are still thin
+- [ ] local sync success is proven; GitHub-hosted runner packaging and automatic OpenCode installation are not
+- [ ] GitHub-side auth-failure and infra-failure coverage are still thin
 - [ ] changing managed config on `main` currently replays as a user patch and can conflict with refreshed managed files
 - [ ] logging is still mostly ad hoc prints; move CLI, engine, and Action paths onto `tracing` with structured logs and an OpenTelemetry-friendly sink model before release
 
@@ -56,6 +57,7 @@ This repository README is the coordination file for the project. It captures the
 - [x] ForkSync currently uses OpenCode as the default agent backend
 - [x] the default model is `opencode/gpt-5-nano`
 - [x] the current local implementation expects an `opencode` binary to be available either on `PATH` or at `~/.opencode/bin/opencode`
+- [x] the generated GitHub workflow now checks for `opencode` and fails fast if it is absent
 - [ ] ForkSync does not yet install OpenCode automatically on GitHub runners
 - [ ] ForkSync does not yet bundle an agent runtime inside the GitHub Action package
 - [ ] we have not yet locked the long-term fallback plan if OpenCode free built-in models disappear or change materially
@@ -757,7 +759,8 @@ Once the setup and local sync paths exist, the first manual demo should look lik
   - [x] integration tests for Git flows
   - [x] integration tests for conflict handling
   - [ ] integration tests for validation failure
-  - [ ] integration tests for auth failure
+  - [x] integration tests for auth failure
+  - [x] integration tests for infra failure
   - [ ] local `act` workflow checks
 
 ## Non-MVP / Planned but Not in v1
