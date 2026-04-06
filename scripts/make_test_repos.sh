@@ -7,11 +7,14 @@ usage() {
   cat <<EOF
 Usage:
   ./scripts/make_test_repos.sh
+  ./scripts/make_test_repos.sh --auto
+  ./scripts/make_test_repos.sh --auto <name>
   ./scripts/make_test_repos.sh <name>
   ./scripts/make_test_repos.sh <absolute-or-relative-path>
 
 Behavior:
   - no argument: recreates $ROOT_DIR/sandbox/repos/demo
+  - --auto: recreates the demo repo, then runs a narrated end-to-end conflict demo
   - bare name: recreates $ROOT_DIR/sandbox/repos/<name>
   - path: recreates the exact directory you pass
 EOF
@@ -20,6 +23,12 @@ EOF
 if [[ "${1:-}" == "--help" ]]; then
   usage
   exit 0
+fi
+
+AUTO_MODE=false
+if [[ "${1:-}" == "--auto" ]]; then
+  AUTO_MODE=true
+  shift
 fi
 
 RAW_DEST="${1:-demo}"
@@ -54,6 +63,61 @@ git -C "$USER_REPO" config user.name "ForkSync Demo"
 git -C "$USER_REPO" config user.email "forksync-demo@example.com"
 git -C "$USER_REPO" remote add upstream "$UPSTREAM_REMOTE"
 git -C "$USER_REPO" fetch upstream >/dev/null
+
+run_auto_demo() {
+  local sleep_seconds="1"
+
+  narrate() {
+    printf '\n[demo] %s\n' "$1"
+  }
+
+  pause() {
+    sleep "$sleep_seconds"
+  }
+
+  narrate "Entering the user fork clone at $USER_REPO."
+  pause
+  narrate "Running 'forksync init' to bootstrap ForkSync with defaults."
+  (
+    cd "$USER_REPO"
+    /Users/samfinton/.local/bin/forksync init
+  ) >/tmp/forksync-auto-init.log 2>&1
+  cat /tmp/forksync-auto-init.log
+  pause
+
+  narrate 'Editing the README in the user repo with "local change".'
+  printf 'seed repo\nlocal change\n' >"$USER_REPO/README.md"
+  pause
+  narrate 'Committing the user-side change on main as "Local readme change".'
+  git -C "$USER_REPO" add README.md
+  git -C "$USER_REPO" commit -m "Local readme change" >/dev/null
+  pause
+
+  narrate 'Editing the README in the upstream working repo with "upstream change".'
+  printf 'seed repo\nupstream change\n' >"$UPSTREAM_WORKING/README.md"
+  pause
+  narrate 'Committing and pushing the upstream-side change as "Upstream readme change".'
+  git -C "$UPSTREAM_WORKING" add README.md
+  git -C "$UPSTREAM_WORKING" commit -m "Upstream readme change" >/dev/null
+  git -C "$UPSTREAM_WORKING" push >/tmp/forksync-auto-push.log 2>&1
+  cat /tmp/forksync-auto-push.log
+  pause
+
+  narrate "Running 'forksync sync --trigger local-debug' so ForkSync can replay the local change on top of the updated upstream."
+  (
+    cd "$USER_REPO"
+    /Users/samfinton/.local/bin/forksync sync --trigger local-debug
+  ) >/tmp/forksync-auto-sync.log 2>&1
+  cat /tmp/forksync-auto-sync.log
+  pause
+
+  narrate "Showing the final README on main."
+  git -C "$USER_REPO" show main:README.md
+  pause
+
+  narrate "Showing the final README on forksync/live."
+  git -C "$USER_REPO" show forksync/live:README.md
+}
 
 cat <<EOF
 Created local ForkSync demo repos under:
@@ -92,3 +156,7 @@ Notes:
   - Run forksync commands only from:
       $USER_REPO
 EOF
+
+if [[ "$AUTO_MODE" == true ]]; then
+  run_auto_demo
+fi
