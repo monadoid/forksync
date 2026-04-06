@@ -263,36 +263,25 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
     );
 
     let push_preflight = probe_init_push_preflight(repo_path)?;
-    let decision_inputs = InitDecisionInputs {
-        requested_auto_push: if args.manual_push_output {
-            Some(false)
-        } else {
-            None
-        },
-        requested_agent_provider: args.agent_provider,
-    };
-    let should_run_wizard = should_run_interactive_wizard(
-        std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
+    let should_run_wizard = should_run_init_wizard(
         args.non_interactive,
-        &decision_inputs,
+        std::io::stdin().is_terminal(),
+        std::io::stdout().is_terminal(),
+        args.manual_push_output,
+        args.agent_provider,
     );
-    let resolved_preferences = if should_run_wizard {
-        run_interactive_init_wizard(InitWizardPromptContext {
-            preflight: push_preflight.clone(),
-            requested_auto_push: decision_inputs.requested_auto_push.map(|value| {
-                if value {
-                    init_wizard::AutoPushChoice::Yes
-                } else {
-                    init_wizard::AutoPushChoice::No
-                }
-            }),
-            requested_agent_choice: decision_inputs
-                .requested_agent_provider
-                .and_then(init_wizard::agent_choice_from_provider),
-        })?
+    let wizard_decisions = if should_run_wizard {
+        Some(run_init_wizard(push_preflight.clone())?)
     } else {
-        resolve_init_plan(&push_preflight, &decision_inputs)
+        None
     };
+    let resolved_preferences = resolve_init_preferences(
+        &push_preflight,
+        should_run_wizard,
+        args.manual_push_output,
+        args.agent_provider,
+        wizard_decisions,
+    );
 
     let report = engine.init(&InitRequest {
         repo_path: repo_path.to_path_buf(),
@@ -309,7 +298,7 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
         upstream_branch: args.upstream_branch,
         build_command: args.build_command,
         test_command: args.test_command,
-        auto_push: resolved_preferences.auto_push_managed_refs,
+        auto_push: resolved_preferences.auto_push,
         agent_provider: resolved_preferences.agent_provider,
     })?;
     info!(
