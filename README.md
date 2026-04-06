@@ -208,7 +208,7 @@ Wizard default:
 
 - If the user does not provide build or test commands, default `validation.mode` to `none`.
 - Today, `forksync init --build-command ... --test-command ...` can persist those commands directly into the generated `.forksync.yml`.
-- Later, the CLI should grow an interactive validation/setup wizard, likely via `interactive-clap`, so users can set build and test commands without hand-editing `.forksync.yml`.
+- Later, the CLI should grow an interactive validation/setup wizard, likely by layering `cliclack` prompts on top of the existing `clap` command tree, so users can set build and test commands without hand-editing `.forksync.yml`.
 
 Out of scope for v1:
 

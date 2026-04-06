@@ -1,7 +1,7 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
+use cliclack::{confirm, intro, note, outro, outro_cancel, select};
 use forksync_config::AgentProvider;
-use interactive_clap::ResultFromCli;
-use strum::{EnumDiscriminants, EnumIter, EnumMessage};
+use std::io;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitPushPreflight {
@@ -55,27 +55,8 @@ pub struct ResolvedInitPreferences {
     pub used_wizard: bool,
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone, EnumDiscriminants, interactive_clap::InteractiveClap)]
-#[strum_discriminants(derive(EnumMessage, EnumIter))]
-pub enum AutoPushChoice {
-    #[strum_discriminants(strum(message = "Yes, let ForkSync push `main` for me"))]
-    Automatic,
-    #[strum_discriminants(strum(message = "No, I will publish the managed branches myself"))]
-    Manual,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, EnumDiscriminants, interactive_clap::InteractiveClap)]
-#[strum_discriminants(derive(EnumMessage, EnumIter))]
-pub enum AgentChoice {
-    #[strum_discriminants(strum(message = "OpenCode (default: opencode/gpt-5-nano)"))]
-    OpenCode,
-    #[strum_discriminants(strum(message = "No AI repair"))]
-    Disabled,
-}
-
 pub fn run_init_wizard(preflight: InitPushPreflight) -> Result<InitWizardDecisions> {
+    intro("ForkSync init").context("start cliclack init session")?;
     let state = InitWizardState::after_preflight(&preflight);
 
     let auto_push = match state {
@@ -84,18 +65,25 @@ pub fn run_init_wizard(preflight: InitPushPreflight) -> Result<InitWizardDecisio
             auto_push_managed_refs,
         } => {
             if let Some(reason) = &preflight.reason {
-                println!("ForkSync will skip automatic push to `main`: {reason}");
+                note(
+                    "Automatic push disabled",
+                    format!("ForkSync will skip direct publication to `main`: {reason}"),
+                )
+                .context("render cliclack push note")?;
             }
             auto_push_managed_refs
         }
         InitWizardState::CheckPushSafety | InitWizardState::Finished => false,
     };
 
-    println!(
-        "ForkSync defaults to OpenCode with model `opencode/gpt-5-nano`. You can keep that default or disable AI repair."
-    );
+    note(
+        "Agent default",
+        "ForkSync defaults to OpenCode with model `opencode/gpt-5-nano`. You can keep that default, pick another provider, or disable AI repair.",
+    )
+    .context("render cliclack agent note")?;
     let agent_provider = prompt_agent_choice()?;
     let _ = state.after_auto_push_choice(auto_push).finish();
+    outro("Captured init preferences. Applying bootstrap plan...")?;
 
     Ok(InitWizardDecisions {
         auto_push,
@@ -104,35 +92,41 @@ pub fn run_init_wizard(preflight: InitPushPreflight) -> Result<InitWizardDecisio
 }
 
 fn prompt_auto_push_choice() -> Result<bool> {
-    loop {
-        match <AutoPushChoice as interactive_clap::FromCli>::from_cli(None, ()) {
-            ResultFromCli::Ok(choice) | ResultFromCli::Cancel(Some(choice)) => {
-                return Ok(matches!(choice, CliAutoPushChoice::Automatic));
-            }
-            ResultFromCli::Cancel(None) => return Err(anyhow!("interactive init canceled")),
-            ResultFromCli::Back => continue,
-            ResultFromCli::Err(_, err) => {
-                return Err(anyhow!("interactive auto-push prompt failed: {err:?}"));
-            }
-        }
-    }
+    confirm("ForkSync can publish the managed branches to `main` for you. Let it push now?")
+        .initial_value(true)
+        .interact()
+        .map_err(|err| map_prompt_error(err, "auto-push confirmation"))
 }
 
 fn prompt_agent_choice() -> Result<AgentProvider> {
-    loop {
-        match <AgentChoice as interactive_clap::FromCli>::from_cli(None, ()) {
-            ResultFromCli::Ok(choice) | ResultFromCli::Cancel(Some(choice)) => {
-                return Ok(match choice {
-                    CliAgentChoice::OpenCode => AgentProvider::OpenCode,
-                    CliAgentChoice::Disabled => AgentProvider::Disabled,
-                });
-            }
-            ResultFromCli::Cancel(None) => return Err(anyhow!("interactive init canceled")),
-            ResultFromCli::Back => continue,
-            ResultFromCli::Err(_, err) => {
-                return Err(anyhow!("interactive agent prompt failed: {err:?}"));
-            }
-        }
+    select("Choose the agent mode for conflict repair")
+        .item(
+            AgentProvider::OpenCode,
+            "OpenCode",
+            "default: opencode/gpt-5-nano",
+        )
+        .item(
+            AgentProvider::OpenAiCompatible,
+            "OpenAI-compatible",
+            "bring your own compatible endpoint later",
+        )
+        .item(
+            AgentProvider::AnthropicCompatible,
+            "Anthropic-compatible",
+            "bring your own compatible endpoint later",
+        )
+        .item(AgentProvider::Disabled, "No AI repair", "")
+        .initial_value(AgentProvider::OpenCode)
+        .interact()
+        .map_err(|err| map_prompt_error(err, "agent selection"))
+}
+
+fn map_prompt_error(err: io::Error, prompt_name: &str) -> anyhow::Error {
+    if err.kind() == io::ErrorKind::Interrupted {
+        let _ = outro_cancel("Init setup cancelled.");
+        anyhow!("interactive init canceled")
+    } else {
+        anyhow!("interactive {prompt_name} failed: {err}")
     }
 }
 
