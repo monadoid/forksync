@@ -22,6 +22,61 @@ This repository README is the coordination file for the project. It captures the
   - [x] First local dogfood slice works end to end
   - [x] `init` now bootstraps through a detached temporary worktree
   - [x] `init` auto-commits and attempts to push managed refs
+  - [x] Main-authoring workflow is implemented locally
+  - [x] Agentic conflict repair works locally through OpenCode
+  - [x] Narrated local `--auto` demo script exists for repeatable dogfooding
+
+## What Works Today
+
+- [x] `forksync init` bootstraps a forked repo with typed defaults
+- [x] `.forksync.yml` and `.github/workflows/forksync.yml` are generated from Rust-owned config
+- [x] `main` is the user authoring branch
+- [x] `forksync/live` is updated as the machine-generated recovery/debug branch
+- [x] local deterministic sync works on clean replay paths
+- [x] same-file replay conflicts can be repaired locally through the OpenCode adapter
+- [x] local state persists author-base and run-history data
+- [x] `scripts/make_test_repos.sh --auto` demonstrates the end-to-end local conflict flow
+
+## Current Gaps and Risks
+
+- [ ] validation modes beyond `none` are not implemented yet
+- [ ] failure PR reuse and GitHub-side failure surfaces are not implemented yet
+- [ ] the generated workflow is still a local-development placeholder, not a published GitHub Action release
+- [ ] local sync success is proven; GitHub-hosted runner packaging and dependency bootstrapping are not
+- [ ] concurrency locking is not implemented yet
+- [ ] auth-failure and infra-failure coverage are still thin
+
+## Current Dependency Assumptions
+
+- [x] ForkSync currently uses OpenCode as the default agent backend
+- [x] the default model is `opencode/gpt-5-nano`
+- [x] the current local implementation expects an `opencode` binary to be available either on `PATH` or at `~/.opencode/bin/opencode`
+- [ ] ForkSync does not yet install OpenCode automatically on GitHub runners
+- [ ] ForkSync does not yet bundle an agent runtime inside the GitHub Action package
+- [ ] we have not yet locked the long-term fallback plan if OpenCode free built-in models disappear or change materially
+
+## Next Steps
+
+1. Harden the local proof of concept with the missing validation, auth-failure, no-change, and infra-failure coverage.
+2. Decide and implement the runner dependency strategy for OpenCode on GitHub Actions.
+3. Package and publish ForkSync as a versioned GitHub Action with explicit release-tag policy.
+4. Implement GitHub-side failure surfaces: standing failure branch, standing PR reuse, and structured summaries.
+5. Expand the public-facing docs from "coordination plan" into "install, run, and debug" documentation.
+
+## Open Product Decisions
+
+- [ ] keep OpenCode built-in free models as the default zero-config path, or require explicit credentials by default
+- [ ] decide whether GitHub Action setup should install OpenCode dynamically on the runner or use a packaged/bundled runtime strategy
+- [ ] decide how much of the long-term product stays fully open source versus optional hosted services
+- [ ] decide whether public fork sharing should look like a directory, registry, or stackable patch-source model
+- [ ] decide what version-upgrade story users get for the GitHub Action without introducing an unsafe auto-update channel
+
+## Draft GitHub Action Release Policy
+
+- [ ] publish immutable release tags for exact versions such as `v1.0.0`
+- [ ] maintain a moving major tag such as `v1` only for users who explicitly want convenience over maximum immutability
+- [ ] document SHA pinning as the most secure consumption option
+- [ ] provide explicit upgrade notes instead of any silent auto-update behavior
 
 ## Product Statement
 
@@ -38,6 +93,12 @@ The v1 product posture is:
 - Public upstreams first, private upstreams via PAT
 - Strongly typed schema-first configuration
 - OpenCode as the initial agent provider behind a swappable agent interface
+
+The repository is currently at "strong local proof of concept" stage:
+
+- local setup and sync UX is real
+- local conflict repair is real
+- GitHub Action publishing, dependency bootstrapping, and GitHub-native failure handling are still ahead
 
 ## Locked Design Decisions
 
@@ -259,7 +320,7 @@ The primary user journey in v1 should be optimized for a fork-first, almost-no-c
    - `forksync/live`
    - `forksync/patches` for internal snapshot/debug use
 10. ForkSync attempts to push the bootstrap refs to `origin` automatically so the user does not have to remember to push the managed branches by hand.
-11. If the current local `main` is clean, ForkSync makes it ready for immediate authoring; otherwise the user switches back to `main` whenever they are ready to start making local changes.
+11. ForkSync leaves the user with `main` as the normal authoring branch.
 12. From that point on, GitHub Actions keeps the fork current on schedule and via manual dispatch.
 
 ### No-config goal
@@ -287,9 +348,8 @@ That is the UX bar to optimize for.
 - generate the GitHub workflow file
 - create the bootstrap commit inside a detached temporary worktree
 - create local management branches if missing
-- make local `main` ready for immediate authoring when it is safe to do so
+- update local `main` to the bootstrap commit when safe to do so
 - attempt to push the managed refs to `origin`
-- otherwise leave the user's current branch untouched and explain how to return to `main`
 - be safe to rerun: no-op by default when already initialized, regenerate only with `--force`
 - tell the user to keep working on `main`
 - print the exact next steps for the user
@@ -510,12 +570,12 @@ Definition of done for a feature:
 
 ### PR 5: Author Commit Derivation
 
-- [ ] Implement user-commit derivation from recorded author base
-  - [ ] Commit range calculation
-  - [ ] Stable ordering rules
+- [x] Implement user-commit derivation from recorded author base
+  - [x] Commit range calculation
+  - [x] Stable ordering rules
   - [ ] Merge-base fallback behaviors where explicitly needed
 - [ ] TDD scope
-  - [ ] Integration tests for commit selection
+  - [x] Integration tests for commit selection
   - [ ] Regression tests for patch-only replay vs full branch history
   - [ ] Multi-upstream-change replay scenarios
 
@@ -531,7 +591,7 @@ Definition of done for a feature:
 - [ ] TDD scope
   - [ ] no-change scenario
   - [x] clean replay scenario
-  - [ ] replay conflict scenario before agent handoff
+  - [x] replay conflict scenario with agent repair
   - [ ] auth failure scenario
   - [ ] infra failure scenario
 
@@ -682,7 +742,7 @@ Once the setup and local sync paths exist, the first manual demo should look lik
   - [x] unit tests for config
   - [x] unit tests for state
   - [x] integration tests for Git flows
-  - [ ] integration tests for conflict handling
+  - [x] integration tests for conflict handling
   - [ ] integration tests for validation failure
   - [ ] integration tests for auth failure
   - [ ] local `act` workflow checks
@@ -694,11 +754,15 @@ Once the setup and local sync paths exist, the first manual demo should look lik
 - [ ] user-friendly CLI distribution via npm, Homebrew, and cargo install flows
 - [ ] bring-your-own OpenCode provider credentials and model selection
 - [ ] hosted ForkSync agent mode with user login
+- [ ] optional public fork directory or registry so users can opt in to sharing discoverable forks
+- [ ] patch stacking and composition from multiple shared public fork sources
 - [ ] restrict agent edits to conflict files or an explicit allowlist for stronger safety
 - [ ] deterministic auto-detection of build, test, and install commands
 - [ ] richer validation profiles
 - [ ] patch registry for publishing reusable patch layers
-- [ ] patch stacking and composition from multiple sources
+- [ ] package or install runner dependencies explicitly instead of assuming preinstalled agent tooling
+- [ ] explicit fallback strategy if OpenCode free built-in models disappear or change
+- [ ] published, versioned GitHub Action release policy with pinned tags and upgrade guidance
 - [ ] conflict fingerprint memory and auto-resolution learning
 - [ ] org-grade auth and GitHub App installs for private repos
 - [ ] multiple output branch strategies
@@ -710,9 +774,9 @@ Once the setup and local sync paths exist, the first manual demo should look lik
 
 These are expected in the next implementation PR:
 
-- replay conflict coverage and agent failure path
 - validation runner beyond `validation.mode = none`
 - local no-change sync coverage
+- GitHub Action packaging and dependency bootstrapping
 - improved workflow execution via `act`
 
 ## Notes for Contributors and Builder Agents
