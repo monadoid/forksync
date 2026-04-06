@@ -1,10 +1,11 @@
 use forksync_agent::{AgentFactory, AgentRepairOutcome, AgentRepairRequest, RepairTrigger};
 use forksync_config::{
-    ConfigIoError, DEFAULT_STATE_FILE, RepoConfig, RunnerPreset, TriggerSource, ValidationMode,
-    load_from_path, write_to_path,
+    AgentProvider, ConfigIoError, DEFAULT_STATE_FILE, RepoConfig, RunnerPreset, TriggerSource,
+    ValidationMode, load_from_path, write_to_path,
 };
 use forksync_git::{
-    GitBackend, GitError, PatchDerivationRequest, RemoteSpec, ReplayRequest, ReplayStatus,
+    GitBackend, GitError, LeasedRefUpdate, PatchDerivationRequest, RemoteSpec, ReplayRequest,
+    ReplayStatus,
 };
 use forksync_github::{FailureReporter, generate_sync_workflow};
 use forksync_state::{PersistedState, RecordedOutcome, RunRecord, StateError, StateStore};
@@ -135,6 +136,8 @@ struct RepoSyncLock {
 }
 
 impl RepoSyncLock {
+    // This lock only protects one checkout on one machine. GitHub-hosted runs
+    // must rely on remote leased pushes plus workflow concurrency instead.
     fn try_acquire(lock_path: &Path, trigger: Option<TriggerSource>) -> Result<Self, EngineError> {
         if let Some(parent) = lock_path.parent() {
             fs::create_dir_all(parent).map_err(|source| EngineError::CreateDir {
@@ -464,6 +467,27 @@ where
             },
         )?;
 
+        let origin_exists = self.git.remote_exists(&request.repo_path, "origin")?;
+        let observed_remote_live_sha = if !request.dry_run && origin_exists {
+            self.git.resolve_remote_branch_tip(
+                &request.repo_path,
+                "origin",
+                &request.config.branches.live,
+            )?
+        } else {
+            None
+        };
+        let observed_remote_output_sha =
+            if !request.dry_run && origin_exists && request.config.sync.update_output_branch {
+                self.git.resolve_remote_branch_tip(
+                    &request.repo_path,
+                    "origin",
+                    &request.config.branches.output,
+                )?
+            } else {
+                None
+            };
+
         let upstream_sha = match &request.upstream_sha {
             Some(sha) => sha.clone(),
             None => self.git.resolve_remote_head(
@@ -556,7 +580,10 @@ where
                 );
             };
 
-            if request.disable_agent || !request.config.agent.enabled {
+            if request.disable_agent
+                || !request.config.agent.enabled
+                || request.config.agent.provider == AgentProvider::Disabled
+            {
                 return self.finish_failed_agent_sync(
                     &request.repo_path,
                     &candidate_branch,
@@ -680,6 +707,23 @@ where
             }
         };
 
+        if !request.dry_run && origin_exists {
+            let mut remote_updates = vec![LeasedRefUpdate {
+                remote_ref: format!("refs/heads/{}", request.config.branches.live),
+                expected_old_sha: observed_remote_live_sha,
+                new_sha: candidate_head.clone(),
+            }];
+            if request.config.sync.update_output_branch {
+                remote_updates.push(LeasedRefUpdate {
+                    remote_ref: format!("refs/heads/{}", request.config.branches.output),
+                    expected_old_sha: observed_remote_output_sha,
+                    new_sha: candidate_head.clone(),
+                });
+            }
+            self.git
+                .push_leased_ref_updates(&request.repo_path, "origin", &remote_updates)?;
+        }
+
         if !request.dry_run {
             self.git.create_or_reset_branch(
                 &request.repo_path,
@@ -734,6 +778,12 @@ where
             patch_commits_applied: applied_commit_count,
             notes: {
                 sync_notes.push(format!("Updated {}.", request.config.branches.live));
+                if origin_exists {
+                    sync_notes.push(
+                        "Published managed refs to origin with explicit force-with-lease protection."
+                            .to_string(),
+                    );
+                }
                 sync_notes.push(if request.config.sync.update_output_branch {
                     format!(
                         "Updated {} from latest upstream plus user commits on {}.",

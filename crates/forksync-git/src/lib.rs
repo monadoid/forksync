@@ -42,6 +42,13 @@ pub struct ReplayResult {
     pub head_sha: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeasedRefUpdate {
+    pub remote_ref: String,
+    pub expected_old_sha: Option<String>,
+    pub new_sha: String,
+}
+
 #[derive(Debug, Error)]
 pub enum GitError {
     #[error("failed to run `{command}`: {source}")]
@@ -64,6 +71,14 @@ pub enum GitError {
     MissingRemote { remote: String, path: PathBuf },
     #[error("unable to determine default branch for remote `{remote}` in {path}")]
     MissingDefaultBranch { remote: String, path: PathBuf },
+    #[error(
+        "git push lease was rejected for remote `{remote}` refs {refs:?}: expected remote values no longer matched"
+    )]
+    LeaseRejected {
+        remote: String,
+        refs: Vec<String>,
+        stderr: String,
+    },
 }
 
 pub trait GitBackend: Send + Sync {
@@ -89,6 +104,12 @@ pub trait GitBackend: Send + Sync {
         remote_name: &str,
         branch: &str,
     ) -> Result<String, GitError>;
+    fn resolve_remote_branch_tip(
+        &self,
+        repo_path: &Path,
+        remote_name: &str,
+        branch: &str,
+    ) -> Result<Option<String>, GitError>;
     fn local_branch_exists(&self, repo_path: &Path, branch: &str) -> Result<bool, GitError>;
     fn create_or_reset_branch(
         &self,
@@ -113,6 +134,12 @@ pub trait GitBackend: Send + Sync {
         repo_path: &Path,
         remote_name: &str,
         refspec: &str,
+    ) -> Result<(), GitError>;
+    fn push_leased_ref_updates(
+        &self,
+        repo_path: &Path,
+        remote_name: &str,
+        updates: &[LeasedRefUpdate],
     ) -> Result<(), GitError>;
     fn add_detached_worktree(
         &self,
@@ -290,6 +317,47 @@ impl GitBackend for SystemGitBackend {
         self.run_git(repo_path, ["rev-parse", &reference])
     }
 
+    fn resolve_remote_branch_tip(
+        &self,
+        repo_path: &Path,
+        remote_name: &str,
+        branch: &str,
+    ) -> Result<Option<String>, GitError> {
+        let command = render_command(
+            repo_path,
+            &[
+                OsStr::new("ls-remote"),
+                OsStr::new("--heads"),
+                OsStr::new(remote_name),
+                OsStr::new(branch),
+            ],
+        );
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo_path)
+            .args(["ls-remote", "--heads", remote_name, branch])
+            .output()
+            .map_err(|source| GitError::Io {
+                command: command.clone(),
+                source,
+            })?;
+
+        if !output.status.success() {
+            return Err(GitError::CommandFailed {
+                command,
+                status: output.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            });
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let sha = stdout
+            .split_whitespace()
+            .next()
+            .map(|value| value.to_string());
+        Ok(sha)
+    }
+
     fn local_branch_exists(&self, repo_path: &Path, branch: &str) -> Result<bool, GitError> {
         let reference = format!("refs/heads/{branch}");
         let command = render_command(
@@ -353,6 +421,69 @@ impl GitBackend for SystemGitBackend {
     ) -> Result<(), GitError> {
         self.run_git(repo_path, ["push", remote_name, refspec])
             .map(|_| ())
+    }
+
+    fn push_leased_ref_updates(
+        &self,
+        repo_path: &Path,
+        remote_name: &str,
+        updates: &[LeasedRefUpdate],
+    ) -> Result<(), GitError> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+
+        let mut args = vec![
+            "push".to_string(),
+            "--atomic".to_string(),
+            remote_name.to_string(),
+        ];
+        for update in updates {
+            let expected = update.expected_old_sha.as_deref().unwrap_or("");
+            args.push(format!(
+                "--force-with-lease={}:{}",
+                update.remote_ref, expected
+            ));
+        }
+        for update in updates {
+            args.push(format!("{}:{}", update.new_sha, update.remote_ref));
+        }
+
+        let command = render_command(repo_path, &args.iter().map(OsStr::new).collect::<Vec<_>>());
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo_path)
+            .args(args.iter().map(|arg| arg.as_str()))
+            .output()
+            .map_err(|source| GitError::Io {
+                command: command.clone(),
+                source,
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if stderr.contains("stale info")
+                || stderr.contains("remote ref updated since checkout")
+                || stderr.contains("atomic push failed")
+            {
+                return Err(GitError::LeaseRejected {
+                    remote: remote_name.to_string(),
+                    refs: updates
+                        .iter()
+                        .map(|update| update.remote_ref.clone())
+                        .collect(),
+                    stderr,
+                });
+            }
+
+            return Err(GitError::CommandFailed {
+                command,
+                status: output.status.code().unwrap_or(-1),
+                stderr,
+            });
+        }
+
+        Ok(())
     }
 
     fn add_detached_worktree(
@@ -476,4 +607,102 @@ fn render_command<S: AsRef<OsStr>>(repo_path: &Path, args: &[S]) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     format!("git -C {} {}", repo_path.display(), rendered_args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn leased_push_rejects_stale_remote_updates() {
+        let temp = TempDir::new().expect("create tempdir");
+        let remote = temp.path().join("remote.git");
+        let clone_a = temp.path().join("clone-a");
+        let clone_b = temp.path().join("clone-b");
+
+        run_git(
+            temp.path(),
+            ["init", "--bare", remote.to_str().expect("utf-8 path")],
+        );
+        run_git(
+            temp.path(),
+            [
+                "clone",
+                remote.to_str().expect("utf-8 path"),
+                clone_a.to_str().expect("utf-8 path"),
+            ],
+        );
+        configure_repo(&clone_a);
+        fs::write(clone_a.join("README.md"), "seed\n").expect("write seed file");
+        run_git(&clone_a, ["add", "README.md"]);
+        run_git(&clone_a, ["commit", "-m", "Initial commit"]);
+        run_git(&clone_a, ["push", "origin", "HEAD:main"]);
+
+        run_git(
+            temp.path(),
+            [
+                "clone",
+                remote.to_str().expect("utf-8 path"),
+                clone_b.to_str().expect("utf-8 path"),
+            ],
+        );
+        configure_repo(&clone_b);
+
+        let git = SystemGitBackend;
+        let expected_main = git
+            .resolve_remote_branch_tip(&clone_b, "origin", "main")
+            .expect("resolve initial remote main");
+
+        fs::write(clone_a.join("A.txt"), "from a\n").expect("write a change");
+        run_git(&clone_a, ["add", "A.txt"]);
+        run_git(&clone_a, ["commit", "-m", "A change"]);
+        let a_head = git.head_sha(&clone_a).expect("resolve a head");
+        git.push_leased_ref_updates(
+            &clone_a,
+            "origin",
+            &[LeasedRefUpdate {
+                remote_ref: "refs/heads/main".to_string(),
+                expected_old_sha: expected_main.clone(),
+                new_sha: a_head,
+            }],
+        )
+        .expect("push a update with lease");
+
+        fs::write(clone_b.join("B.txt"), "from b\n").expect("write b change");
+        run_git(&clone_b, ["add", "B.txt"]);
+        run_git(&clone_b, ["commit", "-m", "B change"]);
+        let b_head = git.head_sha(&clone_b).expect("resolve b head");
+        let error = git
+            .push_leased_ref_updates(
+                &clone_b,
+                "origin",
+                &[LeasedRefUpdate {
+                    remote_ref: "refs/heads/main".to_string(),
+                    expected_old_sha: expected_main,
+                    new_sha: b_head,
+                }],
+            )
+            .expect_err("stale lease should be rejected");
+
+        assert!(matches!(error, GitError::LeaseRejected { .. }));
+    }
+
+    fn configure_repo(repo_path: &Path) {
+        run_git(repo_path, ["config", "user.name", "ForkSync Test"]);
+        run_git(
+            repo_path,
+            ["config", "user.email", "forksync-test@example.com"],
+        );
+    }
+
+    fn run_git<const N: usize>(cwd: &Path, args: [&str; N]) {
+        let status = Command::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .status()
+            .expect("run git command");
+        assert!(status.success(), "git command failed: {:?}", args);
+    }
 }

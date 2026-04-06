@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "TODO: run local workflow smoke tests with act once workflow generation exists."
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+cd "$ROOT_DIR"
+cargo run --bin forksync -- dev act "$@"

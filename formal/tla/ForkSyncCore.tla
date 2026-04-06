@@ -27,6 +27,10 @@ VARIABLES
     \* @type: { base: Int, patches: Set(Str) };
     lastGoodSync,
     \* @type: Int;
+    remoteVersion,
+    \* @type: Int;
+    observedRemoteVersion,
+    \* @type: Int;
     historyLen,
     \* @type: Str;
     lastHistoryOutcome,
@@ -41,8 +45,8 @@ VARIABLES
 
 Vars ==
     << upstreamHead, mainPatches, liveHead, outputHead, authorBase,
-       lastProcessedUpstream, lastGoodSync, historyLen, lastHistoryOutcome,
-       outcome, action_taken,
+       lastProcessedUpstream, lastGoodSync, remoteVersion, observedRemoteVersion,
+       historyLen, lastHistoryOutcome, outcome, action_taken,
        nondet_picks, lockHeld >>
 
 Idle == "Idle"
@@ -50,7 +54,9 @@ Running == "Running"
 NoChange == "NoChange"
 Synced == "Synced"
 FailedAgent == "FailedAgent"
+StaleRun == "StaleRun"
 NoRecordedOutcome == "None"
+RemoteVersionLimit == 2 * (MaxUpstream + MaxHistory + 2)
 
 Init ==
     /\ upstreamHead = 0
@@ -60,6 +66,8 @@ Init ==
     /\ authorBase = 0
     /\ lastProcessedUpstream = -1
     /\ lastGoodSync = [base |-> 0, patches |-> {}]
+    /\ remoteVersion = 0
+    /\ observedRemoteVersion = -1
     /\ historyLen = 0
     /\ lastHistoryOutcome = NoRecordedOutcome
     /\ outcome = Idle
@@ -87,7 +95,7 @@ UserCommit ==
     /\ action_taken' = "UserCommit"
     /\ nondet_picks' = <<>>
     /\ UNCHANGED << upstreamHead, liveHead, outputHead, authorBase,
-                    lastProcessedUpstream, lastGoodSync, historyLen,
+                    lastProcessedUpstream, lastGoodSync, remoteVersion, observedRemoteVersion, historyLen,
                     lastHistoryOutcome, lockHeld >>
 
 UpstreamAdvance ==
@@ -98,18 +106,30 @@ UpstreamAdvance ==
     /\ action_taken' = "UpstreamAdvance"
     /\ nondet_picks' = <<>>
     /\ UNCHANGED << mainPatches, liveHead, outputHead, authorBase,
-                    lastProcessedUpstream, lastGoodSync, historyLen,
+                    lastProcessedUpstream, lastGoodSync, remoteVersion, observedRemoteVersion, historyLen,
                     lastHistoryOutcome, lockHeld >>
 
 StartSync ==
     /\ ~lockHeld
     /\ lockHeld' = TRUE
+    /\ observedRemoteVersion' = remoteVersion
     /\ outcome' = Running
     /\ action_taken' = "StartSync"
     /\ nondet_picks' = <<>>
     /\ UNCHANGED << upstreamHead, mainPatches, liveHead, outputHead,
                     authorBase, lastProcessedUpstream, lastGoodSync,
-                    historyLen, lastHistoryOutcome >>
+                    remoteVersion, historyLen, lastHistoryOutcome >>
+
+CompetingPublish ==
+    /\ lockHeld
+    /\ remoteVersion < RemoteVersionLimit
+    /\ remoteVersion' = remoteVersion + 1
+    /\ outcome' = Running
+    /\ action_taken' = "CompetingPublish"
+    /\ nondet_picks' = <<>>
+    /\ UNCHANGED << upstreamHead, mainPatches, liveHead, outputHead,
+                    authorBase, lastProcessedUpstream, lastGoodSync,
+                    observedRemoteVersion, historyLen, lastHistoryOutcome, lockHeld >>
 
 FinishNoChange ==
     /\ lockHeld
@@ -120,11 +140,13 @@ FinishNoChange ==
     /\ lockHeld' = FALSE
     /\ UNCHANGED << upstreamHead, mainPatches, liveHead, outputHead,
                     authorBase, lastProcessedUpstream, lastGoodSync,
-                    historyLen, lastHistoryOutcome >>
+                    remoteVersion, observedRemoteVersion, historyLen, lastHistoryOutcome >>
 
 FinishSuccess ==
     /\ lockHeld
+    /\ remoteVersion = observedRemoteVersion
     /\ historyLen < MaxHistory
+    /\ remoteVersion < RemoteVersionLimit
     /\ liveHead' = [base |-> upstreamHead, patches |-> mainPatches]
     /\ outputHead' =
         IF UpdateOutputBranch
@@ -136,13 +158,14 @@ FinishSuccess ==
         ELSE authorBase
     /\ lastProcessedUpstream' = upstreamHead
     /\ lastGoodSync' = [base |-> upstreamHead, patches |-> mainPatches]
+    /\ remoteVersion' = remoteVersion + 1
     /\ historyLen' = historyLen + 1
     /\ lastHistoryOutcome' = Synced
     /\ outcome' = Synced
     /\ action_taken' = "FinishSuccess"
     /\ nondet_picks' = <<>>
     /\ lockHeld' = FALSE
-    /\ UNCHANGED << upstreamHead, mainPatches >>
+    /\ UNCHANGED << upstreamHead, mainPatches, observedRemoteVersion >>
 
 FinishFailedAgent ==
     /\ lockHeld
@@ -154,15 +177,29 @@ FinishFailedAgent ==
     /\ nondet_picks' = <<>>
     /\ lockHeld' = FALSE
     /\ UNCHANGED << upstreamHead, mainPatches, liveHead, outputHead,
-                    authorBase, lastProcessedUpstream, lastGoodSync >>
+                    authorBase, lastProcessedUpstream, lastGoodSync,
+                    remoteVersion, observedRemoteVersion >>
+
+FinishStaleRun ==
+    /\ lockHeld
+    /\ remoteVersion /= observedRemoteVersion
+    /\ outcome' = StaleRun
+    /\ action_taken' = "FinishStaleRun"
+    /\ nondet_picks' = <<>>
+    /\ lockHeld' = FALSE
+    /\ UNCHANGED << upstreamHead, mainPatches, liveHead, outputHead,
+                    authorBase, lastProcessedUpstream, lastGoodSync,
+                    remoteVersion, observedRemoteVersion, historyLen, lastHistoryOutcome >>
 
 Next ==
     \/ UserCommit
     \/ UpstreamAdvance
     \/ StartSync
+    \/ CompetingPublish
     \/ FinishNoChange
     \/ FinishSuccess
     \/ FinishFailedAgent
+    \/ FinishStaleRun
 
 Spec ==
     Init /\ [][Next]_Vars
@@ -171,7 +208,7 @@ TraceComplete ==
     outcome /= Synced
 
 OutcomeIsKnown ==
-    outcome \in {Idle, Running, NoChange, Synced, FailedAgent}
+    outcome \in {Idle, Running, NoChange, Synced, FailedAgent, StaleRun}
 
 LockMatchesRunning ==
     lockHeld <=> outcome = Running
@@ -188,6 +225,11 @@ SuccessUpdatesLiveAndState ==
 
 FailurePreservesGeneratedState ==
     outcome = FailedAgent =>
+        /\ lastGoodSync = liveHead
+        /\ ~lockHeld
+
+StaleRunPreservesGeneratedState ==
+    outcome = StaleRun =>
         /\ lastGoodSync = liveHead
         /\ ~lockHeld
 
@@ -211,8 +253,10 @@ TypeInvariant ==
     /\ authorBase \in 0..MaxUpstream
     /\ lastProcessedUpstream \in -1..MaxUpstream
     /\ lastGoodSync.base \in 0..MaxUpstream
+    /\ remoteVersion \in 0..RemoteVersionLimit
+    /\ observedRemoteVersion \in -1..RemoteVersionLimit
     /\ historyLen \in 0..MaxHistory
-    /\ action_taken \in {"init", "UserCommit", "UpstreamAdvance", "StartSync", "FinishNoChange", "FinishSuccess", "FinishFailedAgent"}
+    /\ action_taken \in {"init", "UserCommit", "UpstreamAdvance", "StartSync", "CompetingPublish", "FinishNoChange", "FinishSuccess", "FinishFailedAgent", "FinishStaleRun"}
 
 LiveOnlyDoesNotAdvanceOutput ==
     /\ ~UpdateOutputBranch

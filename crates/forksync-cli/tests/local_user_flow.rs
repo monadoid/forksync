@@ -1,4 +1,4 @@
-use forksync_config::from_yaml_str;
+use forksync_config::{AgentProvider, from_yaml_str, to_yaml_string};
 use forksync_engine::default_sync_lock_path;
 use forksync_state::{FileStateStore, StateStore};
 use fs4::fs_std::FileExt;
@@ -223,11 +223,22 @@ fn sync_replays_main_commits_onto_updated_upstream() {
     let live_patch = git_output(&fixture.user_repo, ["show", "forksync/live:PATCH.txt"]);
     let live_upstream = git_output(&fixture.user_repo, ["show", "forksync/live:UPSTREAM.txt"]);
     let main_config = git_output(&fixture.user_repo, ["show", "main:.forksync.yml"]);
+    let remote_main_patch = git_output_git_dir(&fixture.fork_remote, ["show", "main:PATCH.txt"]);
+    let remote_main_upstream =
+        git_output_git_dir(&fixture.fork_remote, ["show", "main:UPSTREAM.txt"]);
+    let remote_live_patch =
+        git_output_git_dir(&fixture.fork_remote, ["show", "forksync/live:PATCH.txt"]);
+    let remote_live_upstream =
+        git_output_git_dir(&fixture.fork_remote, ["show", "forksync/live:UPSTREAM.txt"]);
 
     assert_eq!(main_patch, "local patch");
     assert_eq!(main_upstream, "upstream change");
     assert_eq!(live_patch, "local patch");
     assert_eq!(live_upstream, "upstream change");
+    assert_eq!(remote_main_patch, "local patch");
+    assert_eq!(remote_main_upstream, "upstream change");
+    assert_eq!(remote_live_patch, "local patch");
+    assert_eq!(remote_live_upstream, "upstream change");
     assert!(main_config.contains("forksync/patches"));
 
     let state = FileStateStore::new(fixture.user_repo.join(".forksync/state/state.yml"))
@@ -308,6 +319,77 @@ fn sync_conflict_reports_failed_agent_instead_of_human_review() {
         state.history.last().map(|record| record.outcome),
         Some(forksync_state::RecordedOutcome::FailedAgent)
     );
+}
+
+#[test]
+fn sync_conflict_reports_failed_agent_when_config_disables_ai_repair() {
+    let fixture = create_local_fork_fixture();
+
+    let init_output = run_cli(&fixture.user_repo, ["init"]);
+    assert!(
+        init_output.status.success(),
+        "init failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&init_output.stdout),
+        String::from_utf8_lossy(&init_output.stderr)
+    );
+
+    let config_path = fixture.user_repo.join(".forksync.yml");
+    let mut config =
+        from_yaml_str(&fs::read_to_string(&config_path).expect("read generated forksync config"))
+            .expect("parse generated forksync config");
+    config.agent.enabled = false;
+    config.agent.provider = AgentProvider::Disabled;
+    fs::write(
+        &config_path,
+        to_yaml_string(&config).expect("serialize config with disabled agent"),
+    )
+    .expect("write config with disabled agent");
+    git(&fixture.user_repo, ["add", ".forksync.yml"]);
+    git(
+        &fixture.user_repo,
+        ["commit", "-m", "Disable agent repair in config"],
+    );
+
+    fs::write(
+        fixture.user_repo.join("README.md"),
+        "seed repo\nlocal change\n",
+    )
+    .expect("write local readme change");
+    git(&fixture.user_repo, ["add", "README.md"]);
+    git(&fixture.user_repo, ["commit", "-m", "Local readme change"]);
+
+    fs::write(
+        fixture.upstream_working.join("README.md"),
+        "seed repo\nupstream change\n",
+    )
+    .expect("write upstream readme change");
+    git(&fixture.upstream_working, ["add", "README.md"]);
+    git(
+        &fixture.upstream_working,
+        ["commit", "-m", "Upstream readme change"],
+    );
+    git(
+        &fixture.upstream_working,
+        [
+            "push",
+            fixture.upstream_remote.to_str().expect("utf-8 path"),
+            "main",
+        ],
+    );
+
+    let sync_output = run_cli(&fixture.user_repo, ["sync", "--trigger", "local-debug"]);
+    assert!(
+        sync_output.status.success(),
+        "sync failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&sync_output.stdout),
+        String::from_utf8_lossy(&sync_output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&sync_output.stdout);
+    assert!(stdout.contains("FailedAgent"));
+    assert!(stdout.contains("agent repair is disabled"));
+    assert!(!stdout.contains("OpenCode"));
+    assert!(!stdout.contains("configured agent could not start"));
 }
 
 #[test]

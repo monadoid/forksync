@@ -37,6 +37,7 @@ This repository README is the coordination file for the project. It captures the
 - [x] same-file replay conflicts can be repaired locally through the OpenCode adapter
 - [x] local state persists author-base and run-history data
 - [x] repo-scoped sync locking prevents overlapping local sync runs in the same checkout
+- [x] remote branch publication now uses explicit `--force-with-lease=<ref>:<expect>` plus atomic push semantics
 - [x] `scripts/make_test_repos.sh --auto` demonstrates the end-to-end local conflict flow
 - [x] abstract sync protocol now has a first formal model and Rust-side replay checks
 
@@ -48,6 +49,7 @@ This repository README is the coordination file for the project. It captures the
 - [ ] local sync success is proven; GitHub-hosted runner packaging and dependency bootstrapping are not
 - [ ] auth-failure and infra-failure coverage are still thin
 - [ ] changing managed config on `main` currently replays as a user patch and can conflict with refreshed managed files
+- [ ] logging is still mostly ad hoc prints; move CLI, engine, and Action paths onto `tracing` with structured logs and an OpenTelemetry-friendly sink model before release
 
 ## Current Dependency Assumptions
 
@@ -160,10 +162,16 @@ Update semantics:
 
 Canonical strategy: replay user commits from `main` onto latest upstream HEAD.
 
+Concurrency posture:
+
+- GitHub Actions `concurrency` is a scheduler-level optimization and should reduce duplicate work, but it is not the sole correctness guard.
+- The local `fs4` lock only protects one checkout on one machine and is primarily for local or self-hosted reuse scenarios.
+- Remote correctness should rely on explicit leased pushes so a stale run fails cleanly if another run already updated the managed refs.
+
 Runtime flow:
 
 1. Load config and effective defaults.
-2. Acquire concurrency lock.
+2. Acquire the local checkout lock when running in a shared checkout.
 3. Fetch fork and upstream remotes.
 4. Resolve latest upstream SHA.
 5. Derive user commits from `main` since the recorded generated author base.
@@ -174,7 +182,7 @@ Runtime flow:
 10. Replay the user commit stack in stable order.
 11. If replay conflicts, invoke the agent repair step.
 12. Run validation if configured.
-13. On success, update `forksync/live`, then force-update `main`.
+13. On success, publish `forksync/live` and optionally `main` with explicit leased atomic pushes so stale runs fail instead of overwriting newer remote refs.
 14. Record the new generated author base.
 15. On failure, open or update one standing failure PR.
 16. Persist state and run history.
@@ -204,6 +212,7 @@ Agent defaults:
 
 - enabled
 - OpenCode provider by default
+- agent repair can be explicitly disabled per repo with `agent.enabled: false` or per run with `forksync sync --no-agent`
 - `opencode/gpt-5-nano` by default
 - built-in no-login OpenCode path by default when available
 - reckless prompt profile
@@ -726,6 +735,7 @@ Once the setup and local sync paths exist, the first manual demo should look lik
 - [ ] Sync behavior
   - [x] effective default resolution
   - [x] concurrency lock
+  - [x] explicit leased remote publication
   - [x] upstream fetch
   - [x] dedupe by upstream SHA
   - [x] candidate branch creation

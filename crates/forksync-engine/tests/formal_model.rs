@@ -14,6 +14,7 @@ struct BranchHead {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(default)]
 struct SyncMachineState {
     #[serde(rename = "upstreamHead")]
     upstream_head: i64,
@@ -29,6 +30,10 @@ struct SyncMachineState {
     last_processed_upstream: i64,
     #[serde(rename = "lastGoodSync")]
     last_good_sync: BranchHead,
+    #[serde(rename = "remoteVersion")]
+    remote_version: i64,
+    #[serde(rename = "observedRemoteVersion")]
+    observed_remote_version: i64,
     #[serde(rename = "historyLen")]
     history_len: i64,
     #[serde(rename = "lastHistoryOutcome")]
@@ -88,6 +93,12 @@ impl Driver for SyncMachineDriver {
             },
             "StartSync" => {
                 self.state.lock_held = true;
+                self.state.observed_remote_version = self.state.remote_version;
+                self.state.outcome = "Running".to_string();
+                Ok(())
+            },
+            "CompetingPublish" => {
+                self.state.remote_version += 1;
                 self.state.outcome = "Running".to_string();
                 Ok(())
             },
@@ -108,6 +119,7 @@ impl Driver for SyncMachineDriver {
                 }
                 self.state.last_good_sync = generated;
                 self.state.last_processed_upstream = self.state.upstream_head;
+                self.state.remote_version += 1;
                 self.state.history_len += 1;
                 self.state.last_history_outcome = "Synced".to_string();
                 self.state.outcome = "Synced".to_string();
@@ -118,6 +130,11 @@ impl Driver for SyncMachineDriver {
                 self.state.history_len += 1;
                 self.state.last_history_outcome = "FailedAgent".to_string();
                 self.state.outcome = "FailedAgent".to_string();
+                self.state.lock_held = false;
+                Ok(())
+            },
+            "FinishStaleRun" => {
+                self.state.outcome = "StaleRun".to_string();
                 self.state.lock_held = false;
                 Ok(())
             }
@@ -238,6 +255,8 @@ fn default_success_trace() -> &'static str {
       "authorBase": "Int",
       "lastProcessedUpstream": "Int",
       "lastGoodSync": "(base: Int, patches: Set(Str))",
+      "remoteVersion": "Int",
+      "observedRemoteVersion": "Int",
       "historyLen": "Int",
       "lastHistoryOutcome": "Str",
       "outcome": "Str",
@@ -254,6 +273,8 @@ fn default_success_trace() -> &'static str {
     "authorBase",
     "lastProcessedUpstream",
     "lastGoodSync",
+    "remoteVersion",
+    "observedRemoteVersion",
     "historyLen",
     "lastHistoryOutcome",
     "outcome",
@@ -271,6 +292,8 @@ fn default_success_trace() -> &'static str {
       "authorBase": { "#bigint": "0" },
       "lastProcessedUpstream": { "#bigint": "-1" },
       "lastGoodSync": { "base": { "#bigint": "0" }, "patches": { "#set": [] } },
+      "remoteVersion": { "#bigint": "0" },
+      "observedRemoteVersion": { "#bigint": "-1" },
       "historyLen": { "#bigint": "0" },
       "lastHistoryOutcome": "None",
       "outcome": "Idle",
@@ -287,6 +310,8 @@ fn default_success_trace() -> &'static str {
       "authorBase": { "#bigint": "0" },
       "lastProcessedUpstream": { "#bigint": "-1" },
       "lastGoodSync": { "base": { "#bigint": "0" }, "patches": { "#set": [] } },
+      "remoteVersion": { "#bigint": "0" },
+      "observedRemoteVersion": { "#bigint": "-1" },
       "historyLen": { "#bigint": "0" },
       "lastHistoryOutcome": "None",
       "outcome": "Idle",
@@ -303,6 +328,8 @@ fn default_success_trace() -> &'static str {
       "authorBase": { "#bigint": "0" },
       "lastProcessedUpstream": { "#bigint": "-1" },
       "lastGoodSync": { "base": { "#bigint": "0" }, "patches": { "#set": [] } },
+      "remoteVersion": { "#bigint": "0" },
+      "observedRemoteVersion": { "#bigint": "-1" },
       "historyLen": { "#bigint": "0" },
       "lastHistoryOutcome": "None",
       "outcome": "Idle",
@@ -319,6 +346,8 @@ fn default_success_trace() -> &'static str {
       "authorBase": { "#bigint": "0" },
       "lastProcessedUpstream": { "#bigint": "-1" },
       "lastGoodSync": { "base": { "#bigint": "0" }, "patches": { "#set": [] } },
+      "remoteVersion": { "#bigint": "0" },
+      "observedRemoteVersion": { "#bigint": "0" },
       "historyLen": { "#bigint": "0" },
       "lastHistoryOutcome": "None",
       "outcome": "Running",
@@ -335,6 +364,8 @@ fn default_success_trace() -> &'static str {
       "authorBase": { "#bigint": "1" },
       "lastProcessedUpstream": { "#bigint": "1" },
       "lastGoodSync": { "base": { "#bigint": "1" }, "patches": { "#set": [ "patch_a" ] } },
+      "remoteVersion": { "#bigint": "1" },
+      "observedRemoteVersion": { "#bigint": "0" },
       "historyLen": { "#bigint": "1" },
       "lastHistoryOutcome": "Synced",
       "outcome": "Synced",
@@ -358,6 +389,8 @@ fn no_change_trace() -> &'static str {
       "authorBase": "Int",
       "lastProcessedUpstream": "Int",
       "lastGoodSync": "(base: Int, patches: Set(Str))",
+      "remoteVersion": "Int",
+      "observedRemoteVersion": "Int",
       "historyLen": "Int",
       "lastHistoryOutcome": "Str",
       "outcome": "Str",
@@ -374,6 +407,8 @@ fn no_change_trace() -> &'static str {
     "authorBase",
     "lastProcessedUpstream",
     "lastGoodSync",
+    "remoteVersion",
+    "observedRemoteVersion",
     "historyLen",
     "lastHistoryOutcome",
     "outcome",
@@ -391,6 +426,8 @@ fn no_change_trace() -> &'static str {
       "authorBase": { "#bigint": "0" },
       "lastProcessedUpstream": { "#bigint": "0" },
       "lastGoodSync": { "base": { "#bigint": "0" }, "patches": { "#set": [] } },
+      "remoteVersion": { "#bigint": "0" },
+      "observedRemoteVersion": { "#bigint": "-1" },
       "historyLen": { "#bigint": "0" },
       "lastHistoryOutcome": "None",
       "outcome": "Idle",
@@ -407,6 +444,8 @@ fn no_change_trace() -> &'static str {
       "authorBase": { "#bigint": "0" },
       "lastProcessedUpstream": { "#bigint": "0" },
       "lastGoodSync": { "base": { "#bigint": "0" }, "patches": { "#set": [] } },
+      "remoteVersion": { "#bigint": "0" },
+      "observedRemoteVersion": { "#bigint": "0" },
       "historyLen": { "#bigint": "0" },
       "lastHistoryOutcome": "None",
       "outcome": "Running",
@@ -423,6 +462,8 @@ fn no_change_trace() -> &'static str {
       "authorBase": { "#bigint": "0" },
       "lastProcessedUpstream": { "#bigint": "0" },
       "lastGoodSync": { "base": { "#bigint": "0" }, "patches": { "#set": [] } },
+      "remoteVersion": { "#bigint": "0" },
+      "observedRemoteVersion": { "#bigint": "0" },
       "historyLen": { "#bigint": "0" },
       "lastHistoryOutcome": "None",
       "outcome": "NoChange",
@@ -446,6 +487,8 @@ fn live_only_success_trace() -> &'static str {
       "authorBase": "Int",
       "lastProcessedUpstream": "Int",
       "lastGoodSync": "(base: Int, patches: Set(Str))",
+      "remoteVersion": "Int",
+      "observedRemoteVersion": "Int",
       "historyLen": "Int",
       "lastHistoryOutcome": "Str",
       "outcome": "Str",
@@ -462,6 +505,8 @@ fn live_only_success_trace() -> &'static str {
     "authorBase",
     "lastProcessedUpstream",
     "lastGoodSync",
+    "remoteVersion",
+    "observedRemoteVersion",
     "historyLen",
     "lastHistoryOutcome",
     "outcome",
@@ -479,6 +524,8 @@ fn live_only_success_trace() -> &'static str {
       "authorBase": { "#bigint": "0" },
       "lastProcessedUpstream": { "#bigint": "-1" },
       "lastGoodSync": { "base": { "#bigint": "0" }, "patches": { "#set": [] } },
+      "remoteVersion": { "#bigint": "0" },
+      "observedRemoteVersion": { "#bigint": "-1" },
       "historyLen": { "#bigint": "0" },
       "lastHistoryOutcome": "None",
       "outcome": "Idle",
@@ -495,6 +542,8 @@ fn live_only_success_trace() -> &'static str {
       "authorBase": { "#bigint": "0" },
       "lastProcessedUpstream": { "#bigint": "-1" },
       "lastGoodSync": { "base": { "#bigint": "0" }, "patches": { "#set": [] } },
+      "remoteVersion": { "#bigint": "0" },
+      "observedRemoteVersion": { "#bigint": "-1" },
       "historyLen": { "#bigint": "0" },
       "lastHistoryOutcome": "None",
       "outcome": "Idle",
@@ -511,6 +560,8 @@ fn live_only_success_trace() -> &'static str {
       "authorBase": { "#bigint": "0" },
       "lastProcessedUpstream": { "#bigint": "-1" },
       "lastGoodSync": { "base": { "#bigint": "0" }, "patches": { "#set": [] } },
+      "remoteVersion": { "#bigint": "0" },
+      "observedRemoteVersion": { "#bigint": "-1" },
       "historyLen": { "#bigint": "0" },
       "lastHistoryOutcome": "None",
       "outcome": "Idle",
@@ -527,6 +578,8 @@ fn live_only_success_trace() -> &'static str {
       "authorBase": { "#bigint": "0" },
       "lastProcessedUpstream": { "#bigint": "-1" },
       "lastGoodSync": { "base": { "#bigint": "0" }, "patches": { "#set": [] } },
+      "remoteVersion": { "#bigint": "0" },
+      "observedRemoteVersion": { "#bigint": "0" },
       "historyLen": { "#bigint": "0" },
       "lastHistoryOutcome": "None",
       "outcome": "Running",
@@ -543,6 +596,8 @@ fn live_only_success_trace() -> &'static str {
       "authorBase": { "#bigint": "0" },
       "lastProcessedUpstream": { "#bigint": "1" },
       "lastGoodSync": { "base": { "#bigint": "1" }, "patches": { "#set": [ "patch_a" ] } },
+      "remoteVersion": { "#bigint": "1" },
+      "observedRemoteVersion": { "#bigint": "0" },
       "historyLen": { "#bigint": "1" },
       "lastHistoryOutcome": "Synced",
       "outcome": "Synced",
