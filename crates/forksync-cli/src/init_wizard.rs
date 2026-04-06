@@ -1,8 +1,7 @@
 use anyhow::{Result, anyhow};
-use color_eyre::eyre::Result as EyreResult;
 use forksync_config::AgentProvider;
-use inquire::Confirm;
 use interactive_clap::ResultFromCli;
+use strum::{EnumDiscriminants, EnumIter, EnumMessage};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitPushPreflight {
@@ -56,94 +55,84 @@ pub struct ResolvedInitPreferences {
     pub used_wizard: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InitWizardAgentChoice {
+#[allow(dead_code)]
+#[derive(Debug, Clone, EnumDiscriminants, interactive_clap::InteractiveClap)]
+#[strum_discriminants(derive(EnumMessage, EnumIter))]
+pub enum AutoPushChoice {
+    #[strum_discriminants(strum(message = "Yes, let ForkSync push `main` for me"))]
+    Automatic,
+    #[strum_discriminants(strum(message = "No, I will publish the managed branches myself"))]
+    Manual,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, EnumDiscriminants, interactive_clap::InteractiveClap)]
+#[strum_discriminants(derive(EnumMessage, EnumIter))]
+pub enum AgentChoice {
+    #[strum_discriminants(strum(message = "OpenCode (default: opencode/gpt-5-nano)"))]
     OpenCode,
+    #[strum_discriminants(strum(message = "No AI repair"))]
     Disabled,
-}
-
-impl InitWizardAgentChoice {
-    fn into_agent_provider(self) -> AgentProvider {
-        match self {
-            Self::OpenCode => AgentProvider::OpenCode,
-            Self::Disabled => AgentProvider::Disabled,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, interactive_clap::InteractiveClap)]
-#[interactive_clap(input_context = InitPushPreflight)]
-pub struct InitWizardPrompt {
-    /// Let ForkSync publish the managed branches to `main` for you when that push looks safe.
-    #[interactive_clap(skip_default_input_arg)]
-    auto_push: bool,
-    #[interactive_clap(subcommand)]
-    agent: InitWizardAgentPrompt,
-}
-
-#[derive(Debug, Clone, Default, interactive_clap::InteractiveClap)]
-pub enum InitWizardAgentPrompt {
-    /// Keep OpenCode enabled with the default model `opencode/gpt-5-nano`.
-    #[default]
-    OpenCode,
-    /// Disable AI repair.
-    Disabled,
-}
-
-impl InitWizardPrompt {
-    fn input_auto_push(context: &InitPushPreflight) -> EyreResult<Option<bool>> {
-        if !context.safe_to_push_main {
-            if let Some(reason) = &context.reason {
-                println!("ForkSync will skip automatic push to `main`: {reason}");
-            } else {
-                println!(
-                    "ForkSync will skip automatic push to `main` because push safety could not be confirmed."
-                );
-            }
-            return Ok(Some(false));
-        }
-
-        Confirm::new("ForkSync can publish the managed branches to `main` for you. Let it push now?")
-            .with_default(true)
-            .prompt()
-            .map(Some)
-            .map_err(Into::into)
-    }
 }
 
 pub fn run_init_wizard(preflight: InitPushPreflight) -> Result<InitWizardDecisions> {
+    let state = InitWizardState::after_preflight(&preflight);
+
+    let auto_push = match state {
+        InitWizardState::ConfirmAutoPush => prompt_auto_push_choice()?,
+        InitWizardState::SelectAgent {
+            auto_push_managed_refs,
+        } => {
+            if let Some(reason) = &preflight.reason {
+                println!("ForkSync will skip automatic push to `main`: {reason}");
+            }
+            auto_push_managed_refs
+        }
+        InitWizardState::CheckPushSafety | InitWizardState::Finished => false,
+    };
+
     println!(
         "ForkSync defaults to OpenCode with model `opencode/gpt-5-nano`. You can keep that default or disable AI repair."
     );
+    let agent_provider = prompt_agent_choice()?;
+    let _ = state.after_auto_push_choice(auto_push).finish();
 
-    let mut prompt = InitWizardPrompt::default();
+    Ok(InitWizardDecisions {
+        auto_push,
+        agent_provider,
+    })
+}
+
+fn prompt_auto_push_choice() -> Result<bool> {
     loop {
-        match <InitWizardPrompt as interactive_clap::FromCli>::from_cli(
-            Some(prompt.clone()),
-            preflight.clone(),
-        ) {
-            ResultFromCli::Ok(prompt) | ResultFromCli::Cancel(Some(prompt)) => {
-                return Ok(map_prompt_to_decisions(prompt));
+        match <AutoPushChoice as interactive_clap::FromCli>::from_cli(None, ()) {
+            ResultFromCli::Ok(choice) | ResultFromCli::Cancel(Some(choice)) => {
+                return Ok(matches!(choice, CliAutoPushChoice::Automatic));
             }
             ResultFromCli::Cancel(None) => return Err(anyhow!("interactive init canceled")),
-            ResultFromCli::Back => {
-                prompt = InitWizardPrompt::default();
+            ResultFromCli::Back => continue,
+            ResultFromCli::Err(_, err) => {
+                return Err(anyhow!("interactive auto-push prompt failed: {err:?}"));
             }
-            ResultFromCli::Err(_, err) => return Err(err.into()),
         }
     }
 }
 
-fn map_prompt_to_decisions(prompt: InitWizardPrompt) -> InitWizardDecisions {
-    let agent_provider = match prompt.agent {
-        InitWizardAgentPrompt::OpenCode => InitWizardAgentChoice::OpenCode,
-        InitWizardAgentPrompt::Disabled => InitWizardAgentChoice::Disabled,
-    }
-    .into_agent_provider();
-
-    InitWizardDecisions {
-        auto_push: prompt.auto_push,
-        agent_provider,
+fn prompt_agent_choice() -> Result<AgentProvider> {
+    loop {
+        match <AgentChoice as interactive_clap::FromCli>::from_cli(None, ()) {
+            ResultFromCli::Ok(choice) | ResultFromCli::Cancel(Some(choice)) => {
+                return Ok(match choice {
+                    CliAgentChoice::OpenCode => AgentProvider::OpenCode,
+                    CliAgentChoice::Disabled => AgentProvider::Disabled,
+                });
+            }
+            ResultFromCli::Cancel(None) => return Err(anyhow!("interactive init canceled")),
+            ResultFromCli::Back => continue,
+            ResultFromCli::Err(_, err) => {
+                return Err(anyhow!("interactive agent prompt failed: {err:?}"));
+            }
+        }
     }
 }
 
@@ -220,6 +209,22 @@ mod tests {
     }
 
     #[test]
+    fn state_machine_prompts_for_auto_push_when_preflight_is_safe() {
+        let next = InitWizardState::after_preflight(&InitPushPreflight {
+            safe_to_push_main: true,
+            reason: None,
+        });
+
+        assert_eq!(next, InitWizardState::ConfirmAutoPush);
+        assert_eq!(
+            next.after_auto_push_choice(false),
+            InitWizardState::SelectAgent {
+                auto_push_managed_refs: false
+            }
+        );
+    }
+
+    #[test]
     fn non_interactive_defaults_use_safe_push_and_opencode() {
         let resolved = resolve_init_preferences(
             &InitPushPreflight {
@@ -236,6 +241,29 @@ mod tests {
             resolved,
             ResolvedInitPreferences {
                 auto_push: true,
+                agent_provider: AgentProvider::OpenCode,
+                used_wizard: false,
+            }
+        );
+    }
+
+    #[test]
+    fn unsafe_preflight_forces_manual_publication_even_with_explicit_auto_push_intent() {
+        let resolved = resolve_init_preferences(
+            &InitPushPreflight {
+                safe_to_push_main: false,
+                reason: Some("branch protection rejected the dry-run push".to_string()),
+            },
+            false,
+            false,
+            Some(AgentProvider::OpenCode),
+            None,
+        );
+
+        assert_eq!(
+            resolved,
+            ResolvedInitPreferences {
+                auto_push: false,
                 agent_provider: AgentProvider::OpenCode,
                 used_wizard: false,
             }

@@ -786,11 +786,12 @@ Once the setup and local sync paths exist, the first manual demo should look lik
 - [ ] patch stacking and composition from multiple shared public fork sources
 - [ ] restrict agent edits to conflict files or an explicit allowlist for stronger safety
 - [ ] deterministic auto-detection of build, test, and install commands
-- [ ] interactive init wizard for confirming branch/output policy, validation commands, and first-run setup choices
+- [x] interactive init wizard for confirming direct `main` publication and default agent selection
   - [x] confirm whether ForkSync may force-update the configured output branch
   - [x] probe push feasibility before the final bootstrap write when possible
   - [x] explain the exact manual recovery command if bootstrap push fails
   - [ ] add a protected-branch fallback path such as opening a PR instead of direct push
+- [ ] interactive validation wizard for collecting build/test commands and other first-run setup choices
 - [ ] richer validation profiles
 - [ ] patch registry for publishing reusable patch layers
 - [ ] package or install runner dependencies explicitly instead of assuming preinstalled agent tooling

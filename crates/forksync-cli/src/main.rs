@@ -328,11 +328,12 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
     if !report.pushed_branches.is_empty() {
         println!("Pushed: {}", report.pushed_branches.join(", "));
     }
-    if !resolved_preferences.auto_push_managed_refs {
-        println!(
-            "- ForkSync left managed branch publication manual: {}",
-            push_preflight.safety_note
-        );
+    if !resolved_preferences.auto_push {
+        if let Some(reason) = &push_preflight.reason {
+            println!("- ForkSync left managed branch publication manual: {reason}");
+        } else {
+            println!("- ForkSync left managed branch publication manual.");
+        }
     }
     for note in report.notes {
         println!("- {}", note);
@@ -371,13 +372,12 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
     Ok(())
 }
 
-fn probe_init_push_preflight(repo_path: &Path) -> Result<InitPreflight> {
+fn probe_init_push_preflight(repo_path: &Path) -> Result<InitPushPreflight> {
     let git = SystemGitBackend;
     if !git.remote_exists(repo_path, "origin")? {
-        return Ok(InitPreflight {
-            safe_to_push_main_directly: false,
-            safety_note: "ForkSync could not confirm a safe direct push to `main` because no origin remote was found."
-                .to_string(),
+        return Ok(InitPushPreflight {
+            safe_to_push_main: false,
+            reason: Some("no origin remote was found".to_string()),
         });
     }
 
@@ -385,11 +385,11 @@ fn probe_init_push_preflight(repo_path: &Path) -> Result<InitPreflight> {
         .default_branch_for_remote(repo_path, "origin")
         .unwrap_or_else(|_| "main".to_string());
     if output_branch != "main" {
-        return Ok(InitPreflight {
-            safe_to_push_main_directly: false,
-            safety_note: format!(
-                "ForkSync could not confirm a safe direct push to `main` because origin default branch resolved to `{output_branch}`."
-            ),
+        return Ok(InitPushPreflight {
+            safe_to_push_main: false,
+            reason: Some(format!(
+                "origin default branch resolved to `{output_branch}` instead of `main`"
+            )),
         });
     }
 
@@ -401,23 +401,19 @@ fn probe_init_push_preflight(repo_path: &Path) -> Result<InitPreflight> {
         .context("run init push preflight against origin/main")?;
 
     if dry_run.status.success() {
-        Ok(InitPreflight {
-            safe_to_push_main_directly: true,
-            safety_note: "ForkSync can dry-run a push to `main` successfully.".to_string(),
+        Ok(InitPushPreflight {
+            safe_to_push_main: true,
+            reason: None,
         })
     } else {
         let stderr = String::from_utf8_lossy(&dry_run.stderr).trim().to_string();
-        Ok(InitPreflight {
-            safe_to_push_main_directly: false,
-            safety_note: if stderr.is_empty() {
-                "ForkSync could not confirm a safe direct push to `main` because `git push --dry-run origin HEAD:refs/heads/main` did not succeed."
-                    .to_string()
+        Ok(InitPushPreflight {
+            safe_to_push_main: false,
+            reason: Some(if stderr.is_empty() {
+                "git push --dry-run origin HEAD:refs/heads/main did not succeed".to_string()
             } else {
-                format!(
-                    "ForkSync could not confirm a safe direct push to `main`: {}",
-                    stderr
-                )
-            },
+                stderr
+            }),
         })
     }
 }

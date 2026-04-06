@@ -23,6 +23,7 @@ forksync-state = { path = "../forksync-state" }
 inquire.workspace = true
 interactive-clap.workspace = true
 serde_json.workspace = true
+strum.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
