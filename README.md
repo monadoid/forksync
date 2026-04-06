@@ -45,6 +45,7 @@ This repository README is the coordination file for the project. It captures the
 - [x] validation modes `build_only`, `build_and_tests`, and `custom` now run locally
 - [x] standing conflict reporting now standardizes on the fixed branch name `forksync/conflicts`
 - [x] generated workflow and local `act` harness now run a built release binary instead of `cargo run`
+- [x] `forksync init` now has an interactive terminal wizard for auto-push consent and default agent selection while preserving a flag-driven non-interactive mode
 
 ## Current Gaps and Risks
 
@@ -786,9 +787,9 @@ Once the setup and local sync paths exist, the first manual demo should look lik
 - [ ] restrict agent edits to conflict files or an explicit allowlist for stronger safety
 - [ ] deterministic auto-detection of build, test, and install commands
 - [ ] interactive init wizard for confirming branch/output policy, validation commands, and first-run setup choices
-  - [ ] confirm whether ForkSync may force-update the configured output branch
-  - [ ] probe push feasibility before the final bootstrap write when possible
-  - [ ] explain the exact manual recovery command if bootstrap push fails
+  - [x] confirm whether ForkSync may force-update the configured output branch
+  - [x] probe push feasibility before the final bootstrap write when possible
+  - [x] explain the exact manual recovery command if bootstrap push fails
   - [ ] add a protected-branch fallback path such as opening a PR instead of direct push
 - [ ] richer validation profiles
 - [ ] patch registry for publishing reusable patch layers

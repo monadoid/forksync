@@ -37,6 +37,8 @@ pub struct InitRequest {
     pub upstream_branch: Option<String>,
     pub build_command: Option<String>,
     pub test_command: Option<String>,
+    pub auto_push: bool,
+    pub agent_provider: AgentProvider,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,7 +53,7 @@ pub struct InitReport {
     pub output_branch: String,
     pub bootstrap_commit_sha: String,
     pub pushed_branches: Vec<String>,
-    pub failed_push_branches: Vec<String>,
+    pub manual_push_branches: Vec<String>,
     pub notes: Vec<String>,
 }
 
@@ -311,6 +313,8 @@ where
         config.upstream.remote_name = upstream_remote.clone();
         config.branches.output = output_branch.clone();
         config.workflow.runner = request.runner;
+        config.agent.provider = request.agent_provider;
+        config.agent.enabled = request.agent_provider != AgentProvider::Disabled;
         apply_init_validation_defaults(&mut config, request)?;
 
         if output_branch != "main" {
@@ -429,24 +433,34 @@ where
             );
         }
 
-        let (pushed_branches, failed_push_branches) = self.push_init_branches(
-            &request.repo_path,
-            &config,
-            &bootstrap_commit_sha,
-            request.create_branches,
-            &mut notes,
-        )?;
-        if pushed_branches.is_empty() {
+        let managed_branches = init_managed_branches(&config, request.create_branches);
+        let (pushed_branches, manual_push_branches) = if request.auto_push {
+            let (pushed_branches, failed_push_branches) = self.push_init_branches(
+                &request.repo_path,
+                &config,
+                &bootstrap_commit_sha,
+                request.create_branches,
+                &mut notes,
+            )?;
+            if pushed_branches.is_empty() {
+                notes.push(
+                    "Did not push bootstrap refs automatically. Push the managed branches manually if you want the remote fork bootstrapped now."
+                        .to_string(),
+                );
+            } else {
+                notes.push(format!(
+                    "Pushed bootstrap refs to origin: {}.",
+                    pushed_branches.join(", ")
+                ));
+            }
+            (pushed_branches, failed_push_branches)
+        } else {
             notes.push(
-                "Did not push bootstrap refs automatically. If you have an origin remote, push the managed branches manually."
+                "Skipped automatic bootstrap push. ForkSync left the managed branch publication step for you to run manually."
                     .to_string(),
             );
-        } else {
-            notes.push(format!(
-                "Pushed bootstrap refs to origin: {}.",
-                pushed_branches.join(", ")
-            ));
-        }
+            (Vec::new(), managed_branches)
+        };
 
         if current_ref == output_branch {
             if worktree_clean {
@@ -478,7 +492,7 @@ where
             output_branch,
             bootstrap_commit_sha,
             pushed_branches,
-            failed_push_branches,
+            manual_push_branches,
             notes,
         })
     }
@@ -1107,7 +1121,7 @@ where
             output_branch: config.branches.output.clone(),
             bootstrap_commit_sha,
             pushed_branches: Vec::new(),
-            failed_push_branches: Vec::new(),
+            manual_push_branches: Vec::new(),
             notes: vec![
                 "ForkSync is already initialized in this repo. Nothing changed.".to_string(),
                 "Re-run `forksync init --force` if you need to regenerate managed files or repair the bootstrap state.".to_string(),
@@ -1197,14 +1211,7 @@ where
             return Ok((Vec::new(), Vec::new()));
         }
 
-        let mut branches = Vec::new();
-        if create_branches {
-            branches.push(config.branches.patch.clone());
-            branches.push(config.branches.live.clone());
-        }
-        if !branches.contains(&config.branches.output) {
-            branches.push(config.branches.output.clone());
-        }
+        let branches = init_managed_branches(config, create_branches);
 
         let mut pushed = Vec::new();
         let mut failed = Vec::new();
@@ -1224,6 +1231,18 @@ where
 
         Ok((pushed, failed))
     }
+}
+
+fn init_managed_branches(config: &RepoConfig, create_branches: bool) -> Vec<String> {
+    let mut branches = Vec::new();
+    if create_branches {
+        branches.push(config.branches.patch.clone());
+        branches.push(config.branches.live.clone());
+    }
+    if !branches.contains(&config.branches.output) {
+        branches.push(config.branches.output.clone());
+    }
+    branches
 }
 
 fn resolve_validation_workdir(repo_path: &Path, validation: &ValidationConfig) -> PathBuf {
@@ -1552,6 +1571,8 @@ mod tests {
             upstream_branch: None,
             build_command: None,
             test_command: None,
+            auto_push: true,
+            agent_provider: AgentProvider::OpenCode,
         }
     }
 }

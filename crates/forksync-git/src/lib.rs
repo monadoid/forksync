@@ -196,6 +196,17 @@ impl SystemGitBackend {
         );
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
+
+    #[instrument(skip_all, fields(repo_path = %repo_path.display(), remote = %remote_name, refspec = %refspec))]
+    pub fn dry_run_push_refspec(
+        &self,
+        repo_path: &Path,
+        remote_name: &str,
+        refspec: &str,
+    ) -> Result<(), GitError> {
+        self.run_git(repo_path, ["push", "--dry-run", remote_name, refspec])
+            .map(|_| ())
+    }
 }
 
 impl GitBackend for SystemGitBackend {

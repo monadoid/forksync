@@ -19,7 +19,10 @@ version = "0.1.0"
 [workspace.dependencies]
 anyhow = "1.0.100"
 clap = { version = "4.5.53", features = ["derive"] }
+color-eyre = "0.6.5"
 dotenvy = "0.15.7"
+inquire = "0.9.1"
+interactive-clap = "0.3.2"
 opentelemetry = "0.31.0"
 opentelemetry-appender-tracing = "0.31.1"
 opentelemetry-otlp = { version = "0.31.0", features = ["grpc-tonic", "logs", "trace"] }

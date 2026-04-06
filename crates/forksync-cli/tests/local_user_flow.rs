@@ -208,6 +208,65 @@ fn init_persists_build_and_test_commands_into_generated_config() {
 }
 
 #[test]
+fn init_no_auto_push_leaves_remote_unmodified_and_prints_exact_command() {
+    let fixture = create_local_fork_fixture();
+
+    let output = run_cli(&fixture.user_repo, ["init", "--no-auto-push"]);
+    assert!(
+        output.status.success(),
+        "init failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Skipped automatic bootstrap push"));
+    assert!(stdout.contains(
+        "git push origin forksync/patches:forksync/patches forksync/live:forksync/live main:main"
+    ));
+
+    assert!(!remote_branch_exists(&fixture.fork_remote, "forksync/patches"));
+    assert!(!remote_branch_exists(&fixture.fork_remote, "forksync/live"));
+    let remote_main_config = Command::new("git")
+        .args([
+            "--git-dir",
+            fixture.fork_remote.to_str().expect("utf-8 path"),
+            "show",
+            "main:.forksync.yml",
+        ])
+        .output()
+        .expect("inspect bare main config file");
+    assert!(
+        !remote_main_config.status.success(),
+        "main should not have the bootstrap config when auto push is disabled"
+    );
+}
+
+#[test]
+fn init_agent_provider_disabled_persists_no_agent_config() {
+    let fixture = create_local_fork_fixture();
+
+    let output = run_cli(
+        &fixture.user_repo,
+        ["init", "--agent-provider", "disabled", "--no-auto-push"],
+    );
+    assert!(
+        output.status.success(),
+        "init failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let config = from_yaml_str(&git_output(
+        &fixture.user_repo,
+        ["show", "main:.forksync.yml"],
+    ))
+    .expect("parse generated config from main branch");
+    assert_eq!(config.agent.provider, AgentProvider::Disabled);
+    assert!(!config.agent.enabled);
+}
+
+#[test]
 fn init_prints_exact_manual_push_command_when_origin_rejects_pushes() {
     let fixture = create_local_fork_fixture();
     install_reject_all_pushes_hook(&fixture.fork_remote);
@@ -227,6 +286,93 @@ fn init_prints_exact_manual_push_command_when_origin_rejects_pushes() {
     assert!(stdout.contains(
         "git push origin forksync/patches:forksync/patches forksync/live:forksync/live main:main"
     ));
+}
+
+#[test]
+fn init_non_interactive_flags_can_disable_auto_push_and_agent() {
+    let fixture = create_local_fork_fixture();
+
+    let output = run_cli(
+        &fixture.user_repo,
+        [
+            "init",
+            "--non-interactive",
+            "--no-auto-push",
+            "--agent-provider",
+            "disabled",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "init failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(
+        "git push origin forksync/patches:forksync/patches forksync/live:forksync/live main:main"
+    ));
+    assert!(!remote_branch_exists(&fixture.fork_remote, "forksync/live"));
+    assert!(!remote_branch_exists(
+        &fixture.fork_remote,
+        "forksync/patches"
+    ));
+
+    let config = from_yaml_str(&git_output(
+        &fixture.user_repo,
+        ["show", "main:.forksync.yml"],
+    ))
+    .expect("parse generated config from main branch");
+    assert!(!config.agent.enabled);
+    assert_eq!(config.agent.provider, AgentProvider::Disabled);
+}
+
+#[test]
+fn init_manual_push_flag_and_disabled_agent_keep_remote_unbootstrapped() {
+    let fixture = create_local_fork_fixture();
+
+    let output = run_cli(
+        &fixture.user_repo,
+        [
+            "init",
+            "--manual-push-output",
+            "--agent-provider",
+            "disabled",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "init failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("git push origin forksync/patches:forksync/patches forksync/live:forksync/live main:main"));
+    assert!(stdout.contains("Skipped automatic bootstrap push"));
+
+    let local_config = from_yaml_str(&git_output(
+        &fixture.user_repo,
+        ["show", "main:.forksync.yml"],
+    ))
+    .expect("parse local bootstrap config");
+    assert_eq!(local_config.agent.provider, AgentProvider::Disabled);
+    assert!(!local_config.agent.enabled);
+
+    let remote_main_config = Command::new("git")
+        .args([
+            "--git-dir",
+            fixture.fork_remote.to_str().expect("utf-8 path"),
+            "show",
+            "main:.forksync.yml",
+        ])
+        .output()
+        .expect("inspect bare main config");
+    assert!(
+        !remote_main_config.status.success(),
+        "remote main should stay unbootstrapped when manual push is selected"
+    );
 }
 
 #[test]

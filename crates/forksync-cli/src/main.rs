@@ -1,3 +1,4 @@
+mod init_wizard;
 mod telemetry;
 
 use anyhow::{Context, Result, anyhow};
@@ -5,14 +6,18 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 use dotenvy::from_path_override;
 use forksync_agent::OpenCodeFactory;
 use forksync_config::{
-    ConfigIoError, DEFAULT_CONFIG_PATH, DEFAULT_WORKFLOW_PATH, RepoConfig, RunnerPreset,
-    TriggerSource, load_from_path, to_yaml_string,
+    AgentProvider, ConfigIoError, DEFAULT_CONFIG_PATH, DEFAULT_WORKFLOW_PATH, RepoConfig,
+    RunnerPreset, TriggerSource, load_from_path, to_yaml_string,
 };
 use forksync_engine::{InitRequest, SyncEngine, SyncRequest, default_state_file_path};
 use forksync_git::{GitBackend, SystemGitBackend};
 use forksync_github::{NoopFailureReporter, generate_sync_workflow};
+use init_wizard::{
+    InitPushPreflight, resolve_init_preferences, run_init_wizard, should_run_init_wizard,
+};
 use forksync_state::{FileStateStore, StateStore};
 use std::fs;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::thread::sleep;
@@ -89,6 +94,12 @@ pub struct InitArgs {
 
     #[arg(long)]
     pub test_command: Option<String>,
+
+    #[arg(long = "manual-push-output", default_value_t = false, alias = "no-auto-push")]
+    pub manual_push_output: bool,
+
+    #[arg(long, value_enum)]
+    pub agent_provider: Option<AgentProvider>,
 }
 
 #[derive(Debug, Args)]
@@ -251,6 +262,38 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
         NoopFailureReporter,
     );
 
+    let push_preflight = probe_init_push_preflight(repo_path)?;
+    let decision_inputs = InitDecisionInputs {
+        requested_auto_push: if args.manual_push_output {
+            Some(false)
+        } else {
+            None
+        },
+        requested_agent_provider: args.agent_provider,
+    };
+    let should_run_wizard = should_run_interactive_wizard(
+        std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
+        args.non_interactive,
+        &decision_inputs,
+    );
+    let resolved_preferences = if should_run_wizard {
+        run_interactive_init_wizard(InitWizardPromptContext {
+            preflight: push_preflight.clone(),
+            requested_auto_push: decision_inputs.requested_auto_push.map(|value| {
+                if value {
+                    init_wizard::AutoPushChoice::Yes
+                } else {
+                    init_wizard::AutoPushChoice::No
+                }
+            }),
+            requested_agent_choice: decision_inputs
+                .requested_agent_provider
+                .and_then(init_wizard::agent_choice_from_provider),
+        })?
+    } else {
+        resolve_init_plan(&push_preflight, &decision_inputs)
+    };
+
     let report = engine.init(&InitRequest {
         repo_path: repo_path.to_path_buf(),
         config_path: config_path.to_path_buf(),
@@ -266,6 +309,8 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
         upstream_branch: args.upstream_branch,
         build_command: args.build_command,
         test_command: args.test_command,
+        auto_push: resolved_preferences.auto_push_managed_refs,
+        agent_provider: resolved_preferences.agent_provider,
     })?;
     info!(
         upstream_remote = %report.upstream_remote,
@@ -294,6 +339,12 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
     if !report.pushed_branches.is_empty() {
         println!("Pushed: {}", report.pushed_branches.join(", "));
     }
+    if !resolved_preferences.auto_push_managed_refs {
+        println!(
+            "- ForkSync left managed branch publication manual: {}",
+            push_preflight.safety_note
+        );
+    }
     for note in report.notes {
         println!("- {}", note);
     }
@@ -311,14 +362,14 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
         report.output_branch
     );
     println!("4. Run `forksync sync --trigger local-debug` to preview local sync behavior.");
-    if !report.failed_push_branches.is_empty() {
+    if !report.manual_push_branches.is_empty() {
         println!(
-            "5. Automatic push did not finish for every managed branch. Run this exact command next:"
+            "5. If you want to publish the managed branches now, run this exact command next:"
         );
         println!(
             "   git push origin {}",
             report
-                .failed_push_branches
+                .manual_push_branches
                 .iter()
                 .map(|branch| format!("{branch}:{branch}"))
                 .collect::<Vec<_>>()
@@ -329,6 +380,57 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
     }
 
     Ok(())
+}
+
+fn probe_init_push_preflight(repo_path: &Path) -> Result<InitPreflight> {
+    let git = SystemGitBackend;
+    if !git.remote_exists(repo_path, "origin")? {
+        return Ok(InitPreflight {
+            safe_to_push_main_directly: false,
+            safety_note: "ForkSync could not confirm a safe direct push to `main` because no origin remote was found."
+                .to_string(),
+        });
+    }
+
+    let output_branch = git
+        .default_branch_for_remote(repo_path, "origin")
+        .unwrap_or_else(|_| "main".to_string());
+    if output_branch != "main" {
+        return Ok(InitPreflight {
+            safe_to_push_main_directly: false,
+            safety_note: format!(
+                "ForkSync could not confirm a safe direct push to `main` because origin default branch resolved to `{output_branch}`."
+            ),
+        });
+    }
+
+    let dry_run = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["push", "--dry-run", "origin", "HEAD:refs/heads/main"])
+        .output()
+        .context("run init push preflight against origin/main")?;
+
+    if dry_run.status.success() {
+        Ok(InitPreflight {
+            safe_to_push_main_directly: true,
+            safety_note: "ForkSync can dry-run a push to `main` successfully.".to_string(),
+        })
+    } else {
+        let stderr = String::from_utf8_lossy(&dry_run.stderr).trim().to_string();
+        Ok(InitPreflight {
+            safe_to_push_main_directly: false,
+            safety_note: if stderr.is_empty() {
+                "ForkSync could not confirm a safe direct push to `main` because `git push --dry-run origin HEAD:refs/heads/main` did not succeed."
+                    .to_string()
+            } else {
+                format!(
+                    "ForkSync could not confirm a safe direct push to `main`: {}",
+                    stderr
+                )
+            },
+        })
+    }
 }
 
 #[instrument(skip_all, fields(repo_path = %repo_path.display(), config_path = %config_path.display()))]
