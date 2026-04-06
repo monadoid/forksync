@@ -778,12 +778,18 @@ Once the setup and local sync paths exist, the first manual demo should look lik
 - [ ] hosted event-driven sync mode via GitHub App or relay
 - [ ] support for GitLab and other forge providers beyond GitHub
 - [ ] user-friendly CLI distribution via npm, Homebrew, and cargo install flows
+- [ ] add a `pnpx forksync` wrapper so the zero-config `forksync init` flow is easy to invoke without a prior Rust toolchain install
 - [ ] bring-your-own OpenCode provider credentials and model selection
 - [ ] hosted ForkSync agent mode with user login
 - [ ] optional public fork directory or registry so users can opt in to sharing discoverable forks
 - [ ] patch stacking and composition from multiple shared public fork sources
 - [ ] restrict agent edits to conflict files or an explicit allowlist for stronger safety
 - [ ] deterministic auto-detection of build, test, and install commands
+- [ ] interactive init wizard for confirming branch/output policy, validation commands, and first-run setup choices
+  - [ ] confirm whether ForkSync may force-update the configured output branch
+  - [ ] probe push feasibility before the final bootstrap write when possible
+  - [ ] explain the exact manual recovery command if bootstrap push fails
+  - [ ] add a protected-branch fallback path such as opening a PR instead of direct push
 - [ ] richer validation profiles
 - [ ] patch registry for publishing reusable patch layers
 - [ ] package or install runner dependencies explicitly instead of assuming preinstalled agent tooling

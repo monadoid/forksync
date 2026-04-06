@@ -311,10 +311,22 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
         report.output_branch
     );
     println!("4. Run `forksync sync --trigger local-debug` to preview local sync behavior.");
-    println!(
-        "5. If automatic push failed, push `{}` and `{}` to origin manually.",
-        report.live_branch, report.output_branch
-    );
+    if !report.failed_push_branches.is_empty() {
+        println!(
+            "5. Automatic push did not finish for every managed branch. Run this exact command next:"
+        );
+        println!(
+            "   git push origin {}",
+            report
+                .failed_push_branches
+                .iter()
+                .map(|branch| format!("{branch}:{branch}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    } else {
+        println!("5. Automatic push already completed for the managed branches.");
+    }
 
     Ok(())
 }

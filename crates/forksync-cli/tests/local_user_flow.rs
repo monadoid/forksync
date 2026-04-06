@@ -208,6 +208,28 @@ fn init_persists_build_and_test_commands_into_generated_config() {
 }
 
 #[test]
+fn init_prints_exact_manual_push_command_when_origin_rejects_pushes() {
+    let fixture = create_local_fork_fixture();
+    install_reject_all_pushes_hook(&fixture.fork_remote);
+
+    let output = run_cli(&fixture.user_repo, ["init"]);
+    assert!(
+        output.status.success(),
+        "init failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Automatic push for branch forksync/patches failed"));
+    assert!(stdout.contains("Automatic push for branch forksync/live failed"));
+    assert!(stdout.contains("Automatic push for branch main failed"));
+    assert!(stdout.contains(
+        "git push origin forksync/patches:forksync/patches forksync/live:forksync/live main:main"
+    ));
+}
+
+#[test]
 fn init_rejects_test_command_without_build_command() {
     let fixture = create_local_fork_fixture();
 
@@ -880,6 +902,27 @@ fn create_local_fork_fixture() -> LocalForkFixture {
         upstream_remote,
         fork_remote,
         user_repo,
+    }
+}
+
+fn install_reject_all_pushes_hook(bare_repo: &Path) {
+    let hooks_dir = bare_repo.join("hooks");
+    fs::create_dir_all(&hooks_dir).expect("create hooks dir");
+    let update_hook = hooks_dir.join("update");
+    fs::write(
+        &update_hook,
+        "#!/bin/sh\nprintf 'pushes disabled for test\\n' >&2\nexit 1\n",
+    )
+    .expect("write update hook");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&update_hook)
+            .expect("stat update hook")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&update_hook, perms).expect("chmod update hook");
     }
 }
 

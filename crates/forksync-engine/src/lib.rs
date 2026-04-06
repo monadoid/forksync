@@ -51,6 +51,7 @@ pub struct InitReport {
     pub output_branch: String,
     pub bootstrap_commit_sha: String,
     pub pushed_branches: Vec<String>,
+    pub failed_push_branches: Vec<String>,
     pub notes: Vec<String>,
 }
 
@@ -428,7 +429,7 @@ where
             );
         }
 
-        let pushed_branches = self.push_init_branches(
+        let (pushed_branches, failed_push_branches) = self.push_init_branches(
             &request.repo_path,
             &config,
             &bootstrap_commit_sha,
@@ -477,6 +478,7 @@ where
             output_branch,
             bootstrap_commit_sha,
             pushed_branches,
+            failed_push_branches,
             notes,
         })
     }
@@ -1105,6 +1107,7 @@ where
             output_branch: config.branches.output.clone(),
             bootstrap_commit_sha,
             pushed_branches: Vec::new(),
+            failed_push_branches: Vec::new(),
             notes: vec![
                 "ForkSync is already initialized in this repo. Nothing changed.".to_string(),
                 "Re-run `forksync init --force` if you need to regenerate managed files or repair the bootstrap state.".to_string(),
@@ -1188,10 +1191,10 @@ where
         bootstrap_commit_sha: &str,
         create_branches: bool,
         notes: &mut Vec<String>,
-    ) -> Result<Vec<String>, EngineError> {
+    ) -> Result<(Vec<String>, Vec<String>), EngineError> {
         if !self.git.remote_exists(repo_path, "origin")? {
             notes.push("No origin remote found, so ForkSync skipped automatic push.".to_string());
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
 
         let mut branches = Vec::new();
@@ -1204,18 +1207,22 @@ where
         }
 
         let mut pushed = Vec::new();
+        let mut failed = Vec::new();
         for branch in branches {
             let refspec = format!("{bootstrap_commit_sha}:refs/heads/{branch}");
             match self.git.push_refspec(repo_path, "origin", &refspec) {
                 Ok(()) => pushed.push(branch),
-                Err(err) => notes.push(format!(
-                    "Automatic push for branch {} failed: {}",
-                    branch, err
-                )),
+                Err(err) => {
+                    failed.push(branch.clone());
+                    notes.push(format!(
+                        "Automatic push for branch {} failed: {}",
+                        branch, err
+                    ));
+                }
             }
         }
 
-        Ok(pushed)
+        Ok((pushed, failed))
     }
 }
 
