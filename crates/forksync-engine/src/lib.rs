@@ -1,18 +1,22 @@
 use forksync_agent::{AgentFactory, AgentRepairOutcome, AgentRepairRequest, RepairTrigger};
 use forksync_config::{
-    AgentProvider, ConfigIoError, DEFAULT_STATE_FILE, RepoConfig, RunnerPreset, TriggerSource,
-    ValidationMode, load_from_path, write_to_path,
+    AgentProvider, ConfigIoError, DEFAULT_CONFIG_PATH, DEFAULT_STATE_FILE, DEFAULT_WORKFLOW_PATH,
+    NamedCommand, RepoConfig, RunnerPreset, TriggerSource, ValidationConfig, ValidationMode,
+    load_from_path, write_to_path,
 };
 use forksync_git::{
     GitBackend, GitError, LeasedRefUpdate, PatchDerivationRequest, RemoteSpec, ReplayRequest,
     ReplayStatus,
 };
-use forksync_github::{FailureReporter, generate_sync_workflow};
+use forksync_github::{
+    FailureDetails, FailureReporter, build_failure_pr_payload, generate_sync_workflow,
+};
 use forksync_state::{PersistedState, RecordedOutcome, RunRecord, StateError, StateStore};
 use fs4::fs_std::FileExt;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 use tempfile::TempDir;
 use thiserror::Error;
 use tracing::{info, instrument, warn};
@@ -31,6 +35,8 @@ pub struct InitRequest {
     pub upstream_remote: Option<String>,
     pub upstream_repo: Option<String>,
     pub upstream_branch: Option<String>,
+    pub build_command: Option<String>,
+    pub test_command: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,13 +119,20 @@ pub enum EngineError {
     PathOutsideRepo { path: PathBuf, repo_path: PathBuf },
     #[error("sync requires a clean worktree")]
     DirtyWorktree,
-    #[error("validation mode `{0:?}` is not implemented in the local dogfood slice yet")]
-    UnsupportedValidation(ValidationMode),
     #[error("another ForkSync sync is already running for this repository: {lock_path}")]
     ConcurrentSync { lock_path: PathBuf },
     #[error("failed to acquire sync lock at {path}: {source}")]
     AcquireSyncLock {
         path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("validation configuration is incomplete: {message}")]
+    ValidationConfiguration { message: String },
+    #[error("failed to execute validation command `{command}` in {working_directory}: {source}")]
+    ValidationCommandIo {
+        command: String,
+        working_directory: PathBuf,
         #[source]
         source: std::io::Error,
     },
@@ -130,6 +143,23 @@ enum BranchUpdateOutcome {
     ResetBackground,
     ResetCheckedOut,
     SkippedCheckedOut,
+}
+
+#[derive(Debug, Clone)]
+struct ValidationStep {
+    name: String,
+    command: String,
+    required: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ValidationFailure {
+    notes: Vec<String>,
+}
+
+enum ValidationFailureOrError {
+    Failure(ValidationFailure),
+    Engine(EngineError),
 }
 
 struct RepoSyncLock {
@@ -280,6 +310,7 @@ where
         config.upstream.remote_name = upstream_remote.clone();
         config.branches.output = output_branch.clone();
         config.workflow.runner = request.runner;
+        apply_init_validation_defaults(&mut config, request)?;
 
         if output_branch != "main" {
             config.branches.output_mode = forksync_config::OutputMode::Custom;
@@ -383,6 +414,13 @@ where
             );
         }
 
+        if config.validation.mode != ValidationMode::None {
+            notes.push(format!(
+                "Configured {:?} validation from init flags.",
+                config.validation.mode
+            ));
+        }
+
         if upstream_remote == "origin" {
             notes.push(
                 "No dedicated upstream remote was detected, so init fell back to origin."
@@ -455,16 +493,6 @@ where
             return Err(EngineError::DirtyWorktree);
         }
 
-        if !request.disable_validation && request.config.validation.mode != ValidationMode::None {
-            warn!(
-                mode = ?request.config.validation.mode,
-                "validation mode configured but not yet implemented"
-            );
-            return Err(EngineError::UnsupportedValidation(
-                request.config.validation.mode,
-            ));
-        }
-
         let _ = &self.failure_reporter;
 
         let remote_name = request.config.upstream.remote_name.clone();
@@ -516,10 +544,15 @@ where
             .author_base_sha
             .clone()
             .unwrap_or_else(|| request.config.branches.output.clone());
+        let mut ignored_patch_paths = vec![PathBuf::from(DEFAULT_CONFIG_PATH)];
+        if request.workflow_path.exists() {
+            ignored_patch_paths.push(PathBuf::from(DEFAULT_WORKFLOW_PATH));
+        }
         let author_commits = self.git.derive_patch_commits(&PatchDerivationRequest {
             repo_path: request.repo_path.clone(),
             patch_branch: request.config.branches.output.clone(),
             base_ref: author_base,
+            ignored_paths: ignored_patch_paths,
         })?;
 
         if !request.force
@@ -582,6 +615,7 @@ where
 
             let Some(conflict_commit_sha) = replay.conflict_commit.clone() else {
                 return self.finish_failed_agent_sync(
+                    &request.config,
                     &request.repo_path,
                     &candidate_branch,
                     &original_ref,
@@ -599,6 +633,7 @@ where
                 || request.config.agent.provider == AgentProvider::Disabled
             {
                 return self.finish_failed_agent_sync(
+                    &request.config,
                     &request.repo_path,
                     &candidate_branch,
                     &original_ref,
@@ -618,6 +653,7 @@ where
                 Ok(agent) => agent,
                 Err(error) => {
                     return self.finish_failed_agent_sync(
+                        &request.config,
                         &request.repo_path,
                         &candidate_branch,
                         &original_ref,
@@ -651,6 +687,7 @@ where
                 Ok(result) => result,
                 Err(error) => {
                     return self.finish_failed_agent_sync(
+                        &request.config,
                         &request.repo_path,
                         &candidate_branch,
                         &original_ref,
@@ -680,6 +717,7 @@ where
                         .position(|commit| commit.sha == conflict_commit_sha)
                     else {
                         return self.finish_failed_agent_sync(
+                            &request.config,
                             &request.repo_path,
                             &candidate_branch,
                             &original_ref,
@@ -704,6 +742,7 @@ where
                 }
                 AgentRepairOutcome::Failed | AgentRepairOutcome::NoChange => {
                     return self.finish_failed_agent_sync(
+                        &request.config,
                         &request.repo_path,
                         &candidate_branch,
                         &original_ref,
@@ -721,6 +760,31 @@ where
             }
         };
 
+        if !request.disable_validation && request.config.validation.mode != ValidationMode::None {
+            match self.run_validation(&request.repo_path, &request.config.validation) {
+                Ok(()) => {
+                    sync_notes.push(format!(
+                        "Validation passed in {:?} mode.",
+                        request.config.validation.mode
+                    ));
+                }
+                Err(ValidationFailureOrError::Failure(ValidationFailure { notes })) => {
+                    return self.finish_failed_validation_sync(
+                        &request.config,
+                        &request.repo_path,
+                        &candidate_branch,
+                        &original_ref,
+                        request.config.sync.prune_temp_branches,
+                        &mut state,
+                        upstream_sha,
+                        applied_commit_count,
+                        notes,
+                    );
+                }
+                Err(ValidationFailureOrError::Engine(error)) => return Err(error),
+            }
+        }
+
         if !request.dry_run && origin_exists {
             let mut remote_updates = vec![LeasedRefUpdate {
                 remote_ref: format!("refs/heads/{}", request.config.branches.live),
@@ -736,7 +800,10 @@ where
             }
             self.git
                 .push_leased_ref_updates(&request.repo_path, "origin", &remote_updates)?;
-            info!(ref_count = remote_updates.len(), "published managed refs to origin");
+            info!(
+                ref_count = remote_updates.len(),
+                "published managed refs to origin"
+            );
         }
 
         if !request.dry_run {
@@ -822,6 +889,7 @@ where
 
     fn finish_failed_agent_sync(
         &self,
+        config: &RepoConfig,
         repo_path: &Path,
         candidate_branch: &str,
         original_ref: &str,
@@ -854,6 +922,13 @@ where
             notes: notes.clone(),
         });
         self.state.save(state)?;
+        self.report_failure_surface(
+            config,
+            state,
+            SyncOutcome::FailedAgent,
+            Some(upstream_sha.as_str()),
+            &notes,
+        );
 
         Ok(SyncReport {
             outcome: SyncOutcome::FailedAgent,
@@ -862,6 +937,140 @@ where
             patch_commits_applied,
             notes,
         })
+    }
+
+    fn finish_failed_validation_sync(
+        &self,
+        config: &RepoConfig,
+        repo_path: &Path,
+        candidate_branch: &str,
+        original_ref: &str,
+        prune_temp_branches: bool,
+        state: &mut PersistedState,
+        upstream_sha: String,
+        patch_commits_applied: usize,
+        notes: Vec<String>,
+    ) -> Result<SyncReport, EngineError> {
+        warn!(
+            upstream_sha = %upstream_sha,
+            patch_commits_applied,
+            "sync failed in validation path"
+        );
+        self.git.checkout(repo_path, original_ref)?;
+        if prune_temp_branches {
+            self.git.delete_branch(repo_path, candidate_branch)?;
+        }
+
+        state.history.push(RunRecord {
+            recorded_at: "local-debug".to_string(),
+            outcome: RecordedOutcome::FailedValidation,
+            upstream_sha: Some(upstream_sha.clone()),
+            live_sha: None,
+            notes: notes.clone(),
+        });
+        self.state.save(state)?;
+        self.report_failure_surface(
+            config,
+            state,
+            SyncOutcome::FailedValidation,
+            Some(upstream_sha.as_str()),
+            &notes,
+        );
+
+        Ok(SyncReport {
+            outcome: SyncOutcome::FailedValidation,
+            used_agent: false,
+            upstream_sha: Some(upstream_sha),
+            patch_commits_applied,
+            notes,
+        })
+    }
+
+    fn run_validation(
+        &self,
+        repo_path: &Path,
+        validation: &ValidationConfig,
+    ) -> Result<(), ValidationFailureOrError> {
+        let working_directory = resolve_validation_workdir(repo_path, validation);
+        let steps = validation_steps(validation).map_err(ValidationFailureOrError::Engine)?;
+
+        for step in steps {
+            let output = shell_command(&step.command, &working_directory).map_err(|source| {
+                ValidationFailureOrError::Engine(EngineError::ValidationCommandIo {
+                    command: step.command.clone(),
+                    working_directory: working_directory.clone(),
+                    source,
+                })
+            })?;
+
+            if !output.status.success() {
+                if !step.required {
+                    continue;
+                }
+                let status = output.status.code().unwrap_or(-1);
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let mut notes = vec![format!(
+                    "Validation step `{}` failed with status {}.",
+                    step.name, status
+                )];
+                if !stderr.is_empty() {
+                    notes.push(format!("stderr: {}", stderr));
+                }
+                return Err(ValidationFailureOrError::Failure(ValidationFailure {
+                    notes,
+                }));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn report_failure_surface(
+        &self,
+        config: &RepoConfig,
+        state: &PersistedState,
+        outcome: SyncOutcome,
+        upstream_sha: Option<&str>,
+        notes: &[String],
+    ) {
+        let should_open_pr = match outcome {
+            SyncOutcome::FailedAgent => {
+                config.notifications.on_failure.open_pr && config.safety.open_pr_on_failed_agent
+            }
+            SyncOutcome::FailedValidation => {
+                config.notifications.on_failure.open_pr
+                    && config.safety.open_pr_on_failed_validation
+            }
+            SyncOutcome::FailedAuth | SyncOutcome::FailedInfra => {
+                config.notifications.on_failure.open_pr
+            }
+            SyncOutcome::NoChange
+            | SyncOutcome::SyncedDeterministic
+            | SyncOutcome::SyncedAgentic => false,
+        };
+        if !should_open_pr {
+            return;
+        }
+
+        let failure_count = state
+            .history
+            .iter()
+            .filter(|record| is_failure_record(record.outcome))
+            .count();
+        let details = FailureDetails {
+            outcome: format!("{outcome:?}"),
+            upstream_sha: upstream_sha.map(ToOwned::to_owned),
+            notes: notes.to_vec(),
+            is_first_failure: failure_count == 1,
+        };
+
+        let Some(payload) = build_failure_pr_payload(config, &details) else {
+            return;
+        };
+
+        if let Err(error) = self.failure_reporter.upsert_failure_pr(&payload) {
+            warn!(error = %error, outcome = ?outcome, "best-effort failure PR reporting failed");
+        }
     }
 
     fn resolve_upstream_remote(&self, request: &InitRequest) -> Result<String, EngineError> {
@@ -1010,6 +1219,134 @@ where
     }
 }
 
+fn resolve_validation_workdir(repo_path: &Path, validation: &ValidationConfig) -> PathBuf {
+    let working_directory = PathBuf::from(&validation.working_directory);
+    if working_directory == PathBuf::from(".") {
+        repo_path.to_path_buf()
+    } else if working_directory.is_absolute() {
+        working_directory
+    } else {
+        repo_path.join(working_directory)
+    }
+}
+
+fn apply_init_validation_defaults(
+    config: &mut RepoConfig,
+    request: &InitRequest,
+) -> Result<(), EngineError> {
+    match (&request.build_command, &request.test_command) {
+        (None, None) => Ok(()),
+        (None, Some(_)) => Err(EngineError::ValidationConfiguration {
+            message: "`--test-command` requires `--build-command` during init".to_string(),
+        }),
+        (Some(build_command), None) => {
+            config.validation.mode = ValidationMode::BuildOnly;
+            config.validation.build_command = Some(build_command.clone());
+            Ok(())
+        }
+        (Some(build_command), Some(test_command)) => {
+            config.validation.mode = ValidationMode::BuildAndTests;
+            config.validation.build_command = Some(build_command.clone());
+            config.validation.test_command = Some(test_command.clone());
+            Ok(())
+        }
+    }
+}
+
+fn validation_steps(validation: &ValidationConfig) -> Result<Vec<ValidationStep>, EngineError> {
+    let mut steps = Vec::new();
+
+    if let Some(install_command) = validation.install_command.clone() {
+        steps.push(ValidationStep {
+            name: "install".to_string(),
+            command: install_command,
+            required: false,
+        });
+    }
+
+    match validation.mode {
+        ValidationMode::None => {}
+        ValidationMode::BuildOnly => {
+            steps.push(required_validation_step(
+                "build",
+                validation.build_command.as_ref(),
+            )?);
+        }
+        ValidationMode::BuildAndTests => {
+            steps.push(required_validation_step(
+                "build",
+                validation.build_command.as_ref(),
+            )?);
+            steps.push(required_validation_step(
+                "test",
+                validation.test_command.as_ref(),
+            )?);
+        }
+        ValidationMode::Custom => {
+            if validation.additional_commands.is_empty() {
+                return Err(EngineError::ValidationConfiguration {
+                    message: "validation.mode=custom requires at least one additional command"
+                        .to_string(),
+                });
+            }
+            steps.extend(validation.additional_commands.iter().cloned().map(
+                |NamedCommand {
+                     name,
+                     command,
+                     required,
+                 }| ValidationStep {
+                    name,
+                    command,
+                    required,
+                },
+            ));
+        }
+    }
+
+    Ok(steps)
+}
+
+fn required_validation_step(
+    name: &str,
+    command: Option<&String>,
+) -> Result<ValidationStep, EngineError> {
+    let Some(command) = command.cloned() else {
+        return Err(EngineError::ValidationConfiguration {
+            message: format!("validation mode requires a `{}` command", name),
+        });
+    };
+
+    Ok(ValidationStep {
+        name: name.to_string(),
+        command,
+        required: true,
+    })
+}
+
+fn shell_command(command: &str, cwd: &Path) -> Result<std::process::Output, std::io::Error> {
+    let mut process = if cfg!(windows) {
+        let mut cmd = ProcessCommand::new("cmd");
+        cmd.args(["/C", command]);
+        cmd
+    } else {
+        let mut cmd = ProcessCommand::new("sh");
+        cmd.args(["-lc", command]);
+        cmd
+    };
+
+    process.current_dir(cwd).output()
+}
+
+fn is_failure_record(outcome: RecordedOutcome) -> bool {
+    matches!(
+        outcome,
+        RecordedOutcome::FailedValidation
+            | RecordedOutcome::FailedAgent
+            | RecordedOutcome::FailedAuth
+            | RecordedOutcome::FailedInfra
+    )
+}
+
 pub fn default_state_file_path(repo_path: &std::path::Path, config: &RepoConfig) -> PathBuf {
     repo_path
         .join(&config.storage.state_dir)
@@ -1116,4 +1453,98 @@ fn ensure_forksync_gitignore_rules(repo_path: &std::path::Path) -> Result<(), En
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_init_validation_defaults_sets_build_and_test_mode() {
+        let mut config = RepoConfig::default();
+        let request = base_init_request();
+        let request = InitRequest {
+            build_command: Some("cargo build --workspace".to_string()),
+            test_command: Some("cargo test --workspace".to_string()),
+            ..request
+        };
+
+        apply_init_validation_defaults(&mut config, &request).expect("apply init validation");
+
+        assert_eq!(config.validation.mode, ValidationMode::BuildAndTests);
+        assert_eq!(
+            config.validation.build_command.as_deref(),
+            Some("cargo build --workspace")
+        );
+        assert_eq!(
+            config.validation.test_command.as_deref(),
+            Some("cargo test --workspace")
+        );
+    }
+
+    #[test]
+    fn apply_init_validation_defaults_rejects_test_without_build() {
+        let mut config = RepoConfig::default();
+        let request = InitRequest {
+            test_command: Some("cargo test --workspace".to_string()),
+            ..base_init_request()
+        };
+
+        let error = apply_init_validation_defaults(&mut config, &request)
+            .expect_err("test command without build command should fail");
+
+        assert!(matches!(error, EngineError::ValidationConfiguration { .. }));
+        assert_eq!(config.validation.mode, ValidationMode::None);
+    }
+
+    #[test]
+    fn validation_steps_require_build_command_for_build_only_mode() {
+        let validation = ValidationConfig {
+            mode: ValidationMode::BuildOnly,
+            ..ValidationConfig::default()
+        };
+
+        let error = validation_steps(&validation).expect_err("missing build command should fail");
+
+        assert!(matches!(error, EngineError::ValidationConfiguration { .. }));
+    }
+
+    #[test]
+    fn validation_steps_expand_build_and_test_sequence() {
+        let validation = ValidationConfig {
+            mode: ValidationMode::BuildAndTests,
+            build_command: Some("cargo build --workspace".to_string()),
+            test_command: Some("cargo test --workspace".to_string()),
+            ..ValidationConfig::default()
+        };
+
+        let steps = validation_steps(&validation).expect("validation steps");
+
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].name, "build");
+        assert_eq!(steps[0].command, "cargo build --workspace");
+        assert!(steps[0].required);
+        assert_eq!(steps[1].name, "test");
+        assert_eq!(steps[1].command, "cargo test --workspace");
+        assert!(steps[1].required);
+    }
+
+    fn base_init_request() -> InitRequest {
+        InitRequest {
+            repo_path: PathBuf::from("/tmp/forksync"),
+            config_path: PathBuf::from("/tmp/forksync/.forksync.yml"),
+            workflow_path: PathBuf::from("/tmp/forksync/.github/workflows/forksync.yml"),
+            force: false,
+            detect_upstream: true,
+            initial_sync: false,
+            install_workflow: true,
+            create_branches: true,
+            runner: RunnerPreset::UbuntuLatest,
+            upstream_remote: None,
+            upstream_repo: None,
+            upstream_branch: None,
+            build_command: None,
+            test_command: None,
+        }
+    }
 }

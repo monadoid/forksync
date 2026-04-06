@@ -83,6 +83,12 @@ pub struct InitArgs {
 
     #[arg(long)]
     pub upstream_branch: Option<String>,
+
+    #[arg(long)]
+    pub build_command: Option<String>,
+
+    #[arg(long)]
+    pub test_command: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -255,6 +261,8 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
         upstream_remote: args.upstream_remote,
         upstream_repo: args.upstream_repo,
         upstream_branch: args.upstream_branch,
+        build_command: args.build_command,
+        test_command: args.test_command,
     })?;
     info!(
         upstream_remote = %report.upstream_remote,

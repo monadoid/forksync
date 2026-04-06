@@ -1,4 +1,4 @@
-use forksync_config::{AgentProvider, from_yaml_str, to_yaml_string};
+use forksync_config::{AgentProvider, ValidationMode, from_yaml_str, to_yaml_string};
 use forksync_engine::default_sync_lock_path;
 use forksync_state::{FileStateStore, StateStore};
 use fs4::fs_std::FileExt;
@@ -168,6 +168,61 @@ fn init_keeps_dirty_feature_branch_checked_out() {
         "forksync/patches"
     ));
     assert!(remote_branch_exists(&fixture.fork_remote, "forksync/live"));
+}
+
+#[test]
+fn init_persists_build_and_test_commands_into_generated_config() {
+    let fixture = create_local_fork_fixture();
+
+    let output = run_cli(
+        &fixture.user_repo,
+        [
+            "init",
+            "--build-command",
+            "cargo build --workspace",
+            "--test-command",
+            "cargo test --workspace",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "init failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let config = from_yaml_str(&git_output(
+        &fixture.user_repo,
+        ["show", "main:.forksync.yml"],
+    ))
+    .expect("parse generated config from main branch");
+    assert_eq!(config.validation.mode, ValidationMode::BuildAndTests);
+    assert_eq!(
+        config.validation.build_command.as_deref(),
+        Some("cargo build --workspace")
+    );
+    assert_eq!(
+        config.validation.test_command.as_deref(),
+        Some("cargo test --workspace")
+    );
+}
+
+#[test]
+fn init_rejects_test_command_without_build_command() {
+    let fixture = create_local_fork_fixture();
+
+    let output = run_cli(
+        &fixture.user_repo,
+        ["init", "--test-command", "cargo test --workspace"],
+    );
+    assert!(
+        !output.status.success(),
+        "init unexpectedly succeeded:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("`--test-command` requires `--build-command` during init"));
 }
 
 #[test]
@@ -393,6 +448,258 @@ fn sync_conflict_reports_failed_agent_when_config_disables_ai_repair() {
 }
 
 #[test]
+fn sync_runs_build_only_validation_before_publishing_refs() {
+    let fixture = create_local_fork_fixture();
+
+    let init_output = run_cli(&fixture.user_repo, ["init"]);
+    assert!(init_output.status.success(), "init failed");
+
+    update_repo_config(&fixture.user_repo, |config| {
+        config.validation.mode = ValidationMode::BuildOnly;
+        config.validation.build_command =
+            Some("test -f PATCH.txt && test -f UPSTREAM.txt".to_string());
+    });
+
+    fs::write(fixture.user_repo.join("PATCH.txt"), "local patch\n").expect("write patch file");
+    git(&fixture.user_repo, ["add", ".forksync.yml", "PATCH.txt"]);
+    git(
+        &fixture.user_repo,
+        ["commit", "-m", "Configure validation and add local patch"],
+    );
+
+    fs::write(
+        fixture.upstream_working.join("UPSTREAM.txt"),
+        "upstream change\n",
+    )
+    .expect("write upstream file");
+    git(&fixture.upstream_working, ["add", "UPSTREAM.txt"]);
+    git(
+        &fixture.upstream_working,
+        ["commit", "-m", "Add upstream change"],
+    );
+    git(
+        &fixture.upstream_working,
+        [
+            "push",
+            fixture.upstream_remote.to_str().expect("utf-8 path"),
+            "main",
+        ],
+    );
+
+    let sync_output = run_cli(
+        &fixture.user_repo,
+        ["sync", "--trigger", "local-debug", "--no-agent"],
+    );
+    assert!(
+        sync_output.status.success(),
+        "sync failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&sync_output.stdout),
+        String::from_utf8_lossy(&sync_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&sync_output.stdout);
+    assert!(stdout.contains("SyncedDeterministic"));
+    assert!(stdout.contains("Validation passed in BuildOnly mode."));
+}
+
+#[test]
+fn sync_reports_failed_validation_and_does_not_publish_refs() {
+    let fixture = create_local_fork_fixture();
+
+    let init_output = run_cli(&fixture.user_repo, ["init"]);
+    assert!(init_output.status.success(), "init failed");
+
+    update_repo_config(&fixture.user_repo, |config| {
+        config.validation.mode = ValidationMode::BuildOnly;
+        config.validation.build_command = Some("exit 17".to_string());
+    });
+
+    fs::write(fixture.user_repo.join("PATCH.txt"), "local patch\n").expect("write patch file");
+    git(&fixture.user_repo, ["add", ".forksync.yml", "PATCH.txt"]);
+    git(
+        &fixture.user_repo,
+        [
+            "commit",
+            "-m",
+            "Configure failing validation and add local patch",
+        ],
+    );
+
+    fs::write(
+        fixture.upstream_working.join("UPSTREAM.txt"),
+        "upstream change\n",
+    )
+    .expect("write upstream file");
+    git(&fixture.upstream_working, ["add", "UPSTREAM.txt"]);
+    git(
+        &fixture.upstream_working,
+        ["commit", "-m", "Add upstream change"],
+    );
+    git(
+        &fixture.upstream_working,
+        [
+            "push",
+            fixture.upstream_remote.to_str().expect("utf-8 path"),
+            "main",
+        ],
+    );
+
+    let sync_output = run_cli(
+        &fixture.user_repo,
+        ["sync", "--trigger", "local-debug", "--no-agent"],
+    );
+    assert!(
+        sync_output.status.success(),
+        "sync failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&sync_output.stdout),
+        String::from_utf8_lossy(&sync_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&sync_output.stdout);
+    assert!(stdout.contains("FailedValidation"));
+    assert!(stdout.contains("Validation step `build` failed with status 17."));
+
+    let main_upstream = Command::new("git")
+        .args([
+            "--git-dir",
+            fixture.fork_remote.to_str().expect("utf-8 path"),
+            "show",
+            "main:UPSTREAM.txt",
+        ])
+        .output()
+        .expect("inspect bare main upstream file");
+    assert!(
+        !main_upstream.status.success(),
+        "output branch should not publish upstream file on validation failure"
+    );
+
+    let state = FileStateStore::new(fixture.user_repo.join(".forksync/state/state.yml"))
+        .load()
+        .expect("load state after failed validation");
+    assert_eq!(
+        state.history.last().map(|record| record.outcome),
+        Some(forksync_state::RecordedOutcome::FailedValidation)
+    );
+}
+
+#[test]
+fn sync_no_validate_bypasses_configured_validation() {
+    let fixture = create_local_fork_fixture();
+
+    let init_output = run_cli(&fixture.user_repo, ["init"]);
+    assert!(init_output.status.success(), "init failed");
+
+    update_repo_config(&fixture.user_repo, |config| {
+        config.validation.mode = ValidationMode::BuildOnly;
+        config.validation.build_command = Some("exit 17".to_string());
+    });
+
+    fs::write(fixture.user_repo.join("PATCH.txt"), "local patch\n").expect("write patch file");
+    git(&fixture.user_repo, ["add", ".forksync.yml", "PATCH.txt"]);
+    git(
+        &fixture.user_repo,
+        [
+            "commit",
+            "-m",
+            "Configure failing validation and add local patch",
+        ],
+    );
+
+    fs::write(
+        fixture.upstream_working.join("UPSTREAM.txt"),
+        "upstream change\n",
+    )
+    .expect("write upstream file");
+    git(&fixture.upstream_working, ["add", "UPSTREAM.txt"]);
+    git(
+        &fixture.upstream_working,
+        ["commit", "-m", "Add upstream change"],
+    );
+    git(
+        &fixture.upstream_working,
+        [
+            "push",
+            fixture.upstream_remote.to_str().expect("utf-8 path"),
+            "main",
+        ],
+    );
+
+    let sync_output = run_cli(
+        &fixture.user_repo,
+        [
+            "sync",
+            "--trigger",
+            "local-debug",
+            "--no-agent",
+            "--no-validate",
+        ],
+    );
+    assert!(
+        sync_output.status.success(),
+        "sync failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&sync_output.stdout),
+        String::from_utf8_lossy(&sync_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&sync_output.stdout);
+    assert!(stdout.contains("SyncedDeterministic"));
+}
+
+#[test]
+fn sync_ignores_managed_config_only_commits_in_patch_replay() {
+    let fixture = create_local_fork_fixture();
+
+    let init_output = run_cli(&fixture.user_repo, ["init"]);
+    assert!(init_output.status.success(), "init failed");
+
+    update_repo_config(&fixture.user_repo, |config| {
+        config.sync.update_output_branch = false;
+    });
+    git(&fixture.user_repo, ["add", ".forksync.yml"]);
+    git(
+        &fixture.user_repo,
+        ["commit", "-m", "Update managed config only"],
+    );
+
+    fs::write(
+        fixture.upstream_working.join("UPSTREAM.txt"),
+        "upstream change\n",
+    )
+    .expect("write upstream file");
+    git(&fixture.upstream_working, ["add", "UPSTREAM.txt"]);
+    git(
+        &fixture.upstream_working,
+        ["commit", "-m", "Add upstream change"],
+    );
+    git(
+        &fixture.upstream_working,
+        [
+            "push",
+            fixture.upstream_remote.to_str().expect("utf-8 path"),
+            "main",
+        ],
+    );
+
+    let sync_output = run_cli(
+        &fixture.user_repo,
+        ["sync", "--trigger", "local-debug", "--no-agent"],
+    );
+    assert!(
+        sync_output.status.success(),
+        "sync failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&sync_output.stdout),
+        String::from_utf8_lossy(&sync_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&sync_output.stdout);
+    assert!(stdout.contains("SyncedDeterministic"));
+    assert!(stdout.contains("Skipped output branch update by config."));
+
+    let updated_config = from_yaml_str(&git_output(
+        &fixture.user_repo,
+        ["show", "main:.forksync.yml"],
+    ))
+    .expect("parse updated config");
+    assert!(!updated_config.sync.update_output_branch);
+}
+
+#[test]
 fn sync_from_uninitialized_directory_shows_init_hint() {
     let temp = TempDir::new().expect("create tempdir");
 
@@ -615,6 +922,18 @@ fn git_output<const N: usize>(cwd: &Path, args: [&str; N]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn update_repo_config(cwd: &Path, mut update: impl FnMut(&mut forksync_config::RepoConfig)) {
+    let config_path = cwd.join(".forksync.yml");
+    let mut config = from_yaml_str(&fs::read_to_string(&config_path).expect("read config"))
+        .expect("parse config");
+    update(&mut config);
+    fs::write(
+        config_path,
+        to_yaml_string(&config).expect("serialize updated config"),
+    )
+    .expect("write updated config");
 }
 
 fn local_branch_exists(cwd: &Path, branch: &str) -> bool {

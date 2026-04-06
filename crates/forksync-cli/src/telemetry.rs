@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use opentelemetry::{KeyValue, global};
 use opentelemetry::trace::TracerProvider;
+use opentelemetry::{KeyValue, global};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::{LogExporter, SpanExporter};
 use opentelemetry_sdk::logs::{BatchLogProcessor, SdkLoggerProvider};
@@ -28,9 +28,8 @@ impl Drop for TelemetryGuard {
 }
 
 pub fn init_telemetry(verbose: bool, json_logs: bool) -> Result<TelemetryGuard> {
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new(if verbose { "debug" } else { "info" })
-    });
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(if verbose { "debug" } else { "info" }));
 
     let resource = Resource::builder_empty()
         .with_attributes([
@@ -56,7 +55,9 @@ pub fn init_telemetry(verbose: bool, json_logs: bool) -> Result<TelemetryGuard> 
     };
 
     if std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").is_some() {
-        global::set_text_map_propagator(opentelemetry_sdk::propagation::TraceContextPropagator::new());
+        global::set_text_map_propagator(
+            opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+        );
 
         let tracer_provider = init_tracer_provider(resource.clone())?;
         let tracer = tracer_provider.tracer("forksync");
@@ -75,10 +76,7 @@ pub fn init_telemetry(verbose: bool, json_logs: bool) -> Result<TelemetryGuard> 
             logger_provider: Some(logger_provider),
         })
     } else {
-        Registry::default()
-            .with(env_filter)
-            .with(fmt_layer)
-            .init();
+        Registry::default().with(env_filter).with(fmt_layer).init();
 
         Ok(TelemetryGuard {
             tracer_provider: None,

@@ -14,6 +14,7 @@ pub struct PatchDerivationRequest {
     pub repo_path: PathBuf,
     pub patch_branch: String,
     pub base_ref: String,
+    pub ignored_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -557,6 +558,16 @@ impl GitBackend for SystemGitBackend {
             .lines()
             .filter_map(|line| {
                 let (sha, summary) = line.split_once('\0')?;
+                if commit_changes_only_ignored_paths(
+                    self,
+                    &request.repo_path,
+                    sha,
+                    &request.ignored_paths,
+                )
+                .ok()?
+                {
+                    return None;
+                }
                 Some(PatchCommit {
                     sha: sha.to_string(),
                     summary: summary.to_string(),
@@ -614,6 +625,34 @@ fn render_command<S: AsRef<OsStr>>(repo_path: &Path, args: &[S]) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     format!("git -C {} {}", repo_path.display(), rendered_args)
+}
+
+fn commit_changes_only_ignored_paths(
+    git: &SystemGitBackend,
+    repo_path: &Path,
+    sha: &str,
+    ignored_paths: &[PathBuf],
+) -> Result<bool, GitError> {
+    if ignored_paths.is_empty() {
+        return Ok(false);
+    }
+
+    let output = git.run_git(repo_path, ["show", "--format=", "--name-only", sha])?;
+    let changed_paths = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+
+    if changed_paths.is_empty() {
+        return Ok(false);
+    }
+
+    Ok(changed_paths.iter().all(|changed| {
+        ignored_paths
+            .iter()
+            .any(|ignored| ignored.to_string_lossy().as_ref() == *changed)
+    }))
 }
 
 #[cfg(test)]

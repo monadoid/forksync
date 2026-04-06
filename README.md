@@ -40,26 +40,28 @@ This repository README is the coordination file for the project. It captures the
 - [x] remote branch publication now uses explicit `--force-with-lease=<ref>:<expect>` plus atomic push semantics
 - [x] `scripts/make_test_repos.sh --auto` demonstrates the end-to-end local conflict flow
 - [x] abstract sync protocol now has a first formal model and Rust-side replay checks
-- [x] generated workflow now bootstraps the Rust toolchain and fails fast if OpenCode is missing
+- [x] generated workflow now bootstraps the Rust toolchain and installs OpenCode automatically when needed
+- [x] `forksync init` can capture explicit build/test validation commands without hand-editing config
+- [x] validation modes `build_only`, `build_and_tests`, and `custom` now run locally
 
 ## Current Gaps and Risks
 
-- [ ] validation modes beyond `none` are not implemented yet
-- [ ] failure PR reuse and GitHub-side failure surfaces are not implemented yet
+- [ ] validation timeout handling is not implemented yet
+- [ ] failure PR reuse is still not implemented end to end, but deterministic payload rendering plus best-effort engine reporting hooks now exist
 - [ ] the generated workflow still runs the CLI directly and is not yet a published GitHub Action release
-- [ ] the generated workflow now bootstraps Rust and validates `opencode`, but GitHub-hosted runner packaging and automatic OpenCode installation are not proven yet
+- [ ] the generated workflow now bootstraps Rust and installs OpenCode, but GitHub-hosted runner packaging is not proven end to end yet
 - [ ] GitHub-side auth-failure and infra-failure coverage are still thin
-- [ ] changing managed config on `main` currently replays as a user patch and can conflict with refreshed managed files
+- [ ] commits on `main` that mix managed files with normal files still replay too coarsely and need path-aware filtering
 
 ## Current Dependency Assumptions
 
 - [x] ForkSync currently uses OpenCode as the default agent backend
 - [x] the default model is `opencode/gpt-5-nano`
 - [x] the current local implementation expects an `opencode` binary to be available either on `PATH` or at `~/.opencode/bin/opencode`
-- [x] the generated GitHub workflow now checks for `opencode` and fails fast if it is absent
+- [x] the generated GitHub workflow now installs OpenCode automatically when the selected agent path requires it
 - [x] CLI, engine, git, state, config, agent, and workflow-generation paths now emit structured `tracing` events and can export OTLP data when `OTEL_EXPORTER_OTLP_ENDPOINT` is configured
 - [x] focused engine coverage now exists for auth-failure and infra-failure sync paths
-- [ ] ForkSync does not yet install OpenCode automatically on GitHub runners
+- [x] ForkSync now installs OpenCode automatically on GitHub runners when the selected workflow path needs it
 - [ ] ForkSync does not yet bundle an agent runtime inside the GitHub Action package
 - [ ] we have not yet locked the long-term fallback plan if OpenCode free built-in models disappear or change materially
 
@@ -202,6 +204,8 @@ Supported v1 modes:
 Wizard default:
 
 - If the user does not provide build or test commands, default `validation.mode` to `none`.
+- Today, `forksync init --build-command ... --test-command ...` can persist those commands directly into the generated `.forksync.yml`.
+- Later, the CLI should grow an interactive validation/setup wizard, likely via `interactive-clap`, so users can set build and test commands without hand-editing `.forksync.yml`.
 
 Out of scope for v1:
 
@@ -607,21 +611,21 @@ Definition of done for a feature:
   - [ ] no-change scenario
   - [x] clean replay scenario
   - [x] replay conflict scenario with agent repair
-  - [ ] auth failure scenario
-  - [ ] infra failure scenario
+  - [x] auth failure scenario
+  - [x] infra failure scenario
 
 ### PR 7: Validation Execution
 
 - [ ] Implement validation runner
-  - [ ] `none`
-  - [ ] `build_only`
-  - [ ] `build_and_tests`
-  - [ ] `custom`
+  - [x] `none`
+  - [x] `build_only`
+  - [x] `build_and_tests`
+  - [x] `custom`
   - [ ] timeout handling
 - [ ] TDD scope
-  - [ ] Unit tests for mode resolution
-  - [ ] Integration tests for success and failure execution paths
-  - [ ] Validation-disabled scenarios
+  - [x] Unit tests for mode resolution
+  - [x] Integration tests for success and failure execution paths
+  - [x] Validation-disabled scenarios
 
 ### PR 8: Output Branch Update and Safety Controls
 
@@ -635,13 +639,15 @@ Definition of done for a feature:
 
 ### PR 9: GitHub Failure Surfaces
 
-- [ ] Implement `forksync-github` payload generation
-  - [ ] standing failure PR metadata
-  - [ ] summary body rendering
-  - [ ] labels, mentions, assignments, requested reviews
+- [ ] Implement `forksync-github` payload generation and real PR upsert behavior
+  - [x] standing failure PR metadata
+  - [x] summary body rendering
+  - [x] labels, mentions, assignments, requested reviews
+  - [x] best-effort engine hook for failed-agent and failed-validation sync paths
 - [ ] TDD scope
-  - [ ] Unit tests for rendered PR bodies
-  - [ ] Unit tests for reuse behavior inputs
+  - [x] Unit tests for rendered PR bodies
+  - [x] Unit tests for reuse behavior inputs
+  - [x] Engine-level tests for failure reporter invocation
   - [ ] Snapshot tests for summaries
 
 ### PR 10: Workflow Generator and GitHub Action Wiring
@@ -653,10 +659,10 @@ Definition of done for a feature:
   - [x] concurrency group
   - [x] CLI invocation placeholder
 - [x] Add generated workflow outputs
-- [ ] Add `scripts/run_act.sh`
+- [x] Add `scripts/run_act.sh`
 - [ ] TDD scope
   - [x] Workflow generation tests
-  - [ ] Local `act` smoke validation
+  - [x] Local `act` smoke validation
 
 ## TDD Plan to Reach a Real Local Demo
 
@@ -745,24 +751,24 @@ Once the setup and local sync paths exist, the first manual demo should look lik
   - [x] user-commit derivation from recorded author base
   - [x] replay user commits from `main`
   - [x] agent repair path
-  - [ ] validation path
+  - [x] validation path
   - [x] live branch update
   - [x] output branch update
   - [x] state persistence
 - [ ] Failure handling
   - [ ] standing failure branch policy
   - [ ] standing failure PR reuse
-  - [ ] structured summary generation
+  - [x] structured summary generation
   - [ ] artifact/log hooks
 - [ ] Test coverage
   - [x] unit tests for config
   - [x] unit tests for state
   - [x] integration tests for Git flows
   - [x] integration tests for conflict handling
-  - [ ] integration tests for validation failure
+  - [x] integration tests for validation failure
   - [x] integration tests for auth failure
   - [x] integration tests for infra failure
-  - [ ] local `act` workflow checks
+  - [x] local `act` workflow checks
 
 ## Non-MVP / Planned but Not in v1
 
@@ -791,10 +797,11 @@ Once the setup and local sync paths exist, the first manual demo should look lik
 
 These are expected in the next implementation PR:
 
-- validation runner beyond `validation.mode = none`
-- local no-change sync coverage
-- GitHub Action packaging and dependency bootstrapping
-- improved workflow execution via `act`
+- future interactive validation wizard flow for collecting build/test commands from the CLI
+- validation timeout handling
+- real GitHub failure PR reuse/update implementation
+- mixed managed-file commit replay handling
+- GitHub Action packaging and release wiring
 
 ## Notes for Contributors and Builder Agents
 
