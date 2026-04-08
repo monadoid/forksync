@@ -475,7 +475,7 @@ mod tests {
         assert!(workflow.contents.contains("cron: '*/15 * * * *'"));
         assert!(workflow.contents.contains("uses: actions/cache@v4"));
         assert!(workflow.contents.contains("path: ~/.cache/forksync"));
-        assert!(workflow.contents.contains("uses: samfinton/forksync@v1"));
+        assert!(workflow.contents.contains("uses: monadoid/forksync@v1"));
         assert!(workflow.contents.contains("trigger: schedule"));
         assert!(workflow.contents.contains("install-opencode: true"));
         assert!(workflow.contents.contains("contents: write"));
@@ -566,8 +566,8 @@ mod tests {
     #[test]
     fn cache_key_fragment_sanitizes_action_ref() {
         assert_eq!(
-            cache_key_fragment("samfinton/forksync@v1.2.3"),
-            "samfinton-forksync-v1-2-3"
+            cache_key_fragment("monadoid/forksync@v1.2.3"),
+            "monadoid-forksync-v1-2-3"
         );
     }
 }

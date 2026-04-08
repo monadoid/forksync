@@ -10,14 +10,14 @@ function normalizeSourceRef(source) {
 
 export function renderBootstrapCommand(sources) {
   if (!sources.length) {
-    return "forksync init";
+    return "pnpx forksync init";
   }
 
   const args = sources
     .map((source) => `--source '${normalizeSourceRef(source)}'`)
     .join(" ");
 
-  return `forksync init ${args}`;
+  return `pnpx forksync init ${args}`;
 }
 
 export function escapeHtml(value) {

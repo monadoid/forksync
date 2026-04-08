@@ -1,8 +1,22 @@
 name = "forksync-registry"
 main = "src/index.js"
 compatibility_date = "2026-04-08"
+account_id = "e5d7de33638486de6a01f401783d4446"
 
-[[d1_databases]]
+[env.staging]
+name = "forksync-registry-staging"
+vars = { REGISTRY_ENV = "staging" }
+
+[[env.staging.d1_databases]]
 binding = "REGISTRY_DB"
-database_name = "forksync-registry"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_name = "forksync-registry-staging"
+database_id = "b5426ec6-83c9-4a57-8c49-3d067f2f1492"
+
+[env.production]
+name = "forksync-registry-prod"
+vars = { REGISTRY_ENV = "production" }
+
+[[env.production.d1_databases]]
+binding = "REGISTRY_DB"
+database_name = "forksync-registry-prod"
+database_id = "09f0a3d4-a621-43b1-ae16-5a4aa0046c1f"

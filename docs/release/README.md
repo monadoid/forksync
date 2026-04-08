@@ -41,7 +41,7 @@ The launcher accepts pass-through CLI arguments and wrapper-only overrides:
 Public workflows should pin to:
 
 ```yaml
-uses: samfinton/forksync@v1
+uses: monadoid/forksync@v1
 ```
 
 The action defaults to downloading the latest compatible release binary.

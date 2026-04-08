@@ -23,7 +23,7 @@ function parseLauncherArgs(argv) {
     repository:
       process.env.FORKSYNC_BINARY_REPOSITORY?.trim() ||
       process.env.GITHUB_ACTION_REPOSITORY?.trim() ||
-      "samfinton/forksync",
+      "monadoid/forksync",
     allowBuildFallback: runtime.parseBool(process.env.FORKSYNC_ALLOW_BUILD_FALLBACK ?? "false"),
   };
 

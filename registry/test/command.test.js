@@ -10,10 +10,10 @@ test("renderBootstrapCommand returns a clean init command for multiple sources",
 
   assert.equal(
     command,
-    "forksync init --source 'github.com/alice/widget#main' --source 'github.com/bob/widget#v2'"
+    "pnpx forksync init --source 'github.com/alice/widget#main' --source 'github.com/bob/widget#v2'"
   );
 });
 
 test("renderBootstrapCommand falls back to a bare init command", () => {
-  assert.equal(renderBootstrapCommand([]), "forksync init");
+  assert.equal(renderBootstrapCommand([]), "pnpx forksync init");
 });

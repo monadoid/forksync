@@ -1,21 +1,25 @@
+import { and, desc, eq, inArray, like, or } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/d1";
+import { sources } from "./schema.js";
+
 function rowToSource(row) {
   return {
     id: row.id,
-    upstream_repo: row.upstream_repo,
-    source_repo: row.source_repo,
-    tracked_branch: row.tracked_branch,
-    display_name: row.display_name,
+    upstream_repo: row.upstreamRepo ?? row.upstream_repo,
+    source_repo: row.sourceRepo ?? row.source_repo,
+    tracked_branch: row.trackedBranch ?? row.tracked_branch,
+    display_name: row.displayName ?? row.display_name,
     summary: row.summary,
     visibility: row.visibility,
     stars: row.stars,
     forks: row.forks,
-    last_pushed_at: row.last_pushed_at,
+    last_pushed_at: row.lastPushedAt ?? row.last_pushed_at,
     verified: Boolean(row.verified),
-    verified_by_login: row.verified_by_login,
-    published_by_login: row.published_by_login,
-    published_at: row.published_at,
-    updated_at: row.updated_at,
-    metadata: safeParseJson(row.metadata_json),
+    verified_by_login: row.verifiedByLogin ?? row.verified_by_login,
+    published_by_login: row.publishedByLogin ?? row.published_by_login,
+    published_at: row.publishedAt ?? row.published_at,
+    updated_at: row.updatedAt ?? row.updated_at,
+    metadata: safeParseJson(row.metadataJson ?? row.metadata_json),
   };
 }
 
@@ -32,32 +36,28 @@ function safeParseJson(text) {
 }
 
 export async function listSources(db, query = "") {
-  const sql = query.trim()
-    ? `
-      SELECT *
-      FROM sources
-      WHERE visibility = 'public'
-        AND verified = 1
-        AND (
-          lower(display_name) LIKE lower(?)
-          OR lower(source_repo) LIKE lower(?)
-          OR lower(upstream_repo) LIKE lower(?)
-          OR lower(summary) LIKE lower(?)
-        )
-      ORDER BY stars DESC, forks DESC, updated_at DESC
-      LIMIT 50
-    `
-    : `
-      SELECT *
-      FROM sources
-      WHERE visibility = 'public'
-        AND verified = 1
-      ORDER BY stars DESC, forks DESC, updated_at DESC
-      LIMIT 50
-    `;
-  const params = query.trim() ? Array.from({ length: 4 }, () => `%${query.trim()}%`) : [];
-  const result = await db.prepare(sql).bind(...params).all();
-  return (result.results ?? []).map(rowToSource);
+  const orm = drizzle(db);
+  const normalized = query.trim();
+  const filters = [eq(sources.visibility, "public"), eq(sources.verified, 1)];
+  if (normalized) {
+    const pattern = `%${normalized}%`;
+    filters.push(
+      or(
+        like(sources.displayName, pattern),
+        like(sources.sourceRepo, pattern),
+        like(sources.upstreamRepo, pattern),
+        like(sources.summary, pattern)
+      )
+    );
+  }
+
+  const rows = await orm
+    .select()
+    .from(sources)
+    .where(and(...filters))
+    .orderBy(desc(sources.stars), desc(sources.forks), desc(sources.updatedAt))
+    .limit(50);
+  return rows.map(rowToSource);
 }
 
 export async function getSourcesByIds(db, ids) {
@@ -65,108 +65,77 @@ export async function getSourcesByIds(db, ids) {
     return [];
   }
 
-  const placeholders = ids.map(() => "?").join(", ");
-  const result = await db
-    .prepare(
-      `
-      SELECT *
-      FROM sources
-      WHERE id IN (${placeholders})
-        AND visibility = 'public'
-      ORDER BY stars DESC, forks DESC, updated_at DESC
-    `
-    )
-    .bind(...ids)
-    .all();
+  const orm = drizzle(db);
+  const rows = await orm
+    .select()
+    .from(sources)
+    .where(and(inArray(sources.id, ids), eq(sources.visibility, "public")))
+    .orderBy(desc(sources.stars), desc(sources.forks), desc(sources.updatedAt));
+  return rows.map(rowToSource);
+}
 
-  return (result.results ?? []).map(rowToSource);
+export async function getSourceById(db, id) {
+  const orm = drizzle(db);
+  const rows = await orm.select().from(sources).where(eq(sources.id, id)).limit(1);
+  return rows.length ? rowToSource(rows[0]) : null;
 }
 
 export async function upsertSource(db, source, identity) {
+  const orm = drizzle(db);
   const now = new Date().toISOString();
   const record = {
     id: source.id,
-    upstream_repo: source.upstream_repo,
-    source_repo: source.source_repo,
-    tracked_branch: source.tracked_branch,
-    display_name: source.display_name,
+    upstreamRepo: source.upstream_repo,
+    sourceRepo: source.source_repo,
+    trackedBranch: source.tracked_branch,
+    displayName: source.display_name,
     summary: source.summary ?? "",
     visibility: source.visibility ?? "public",
     stars: Number(source.stars ?? 0),
     forks: Number(source.forks ?? 0),
-    last_pushed_at: source.last_pushed_at ?? null,
+    lastPushedAt: source.last_pushed_at ?? null,
     verified: source.verified ? 1 : 0,
-    verified_by_login: source.verified_by_login ?? identity.login,
-    published_by_login: identity.login,
-    published_at: source.published_at ?? now,
-    updated_at: now,
-    metadata_json: JSON.stringify(source.metadata ?? {}),
+    verifiedByLogin: source.verified_by_login ?? identity.login,
+    publishedByLogin: identity.login,
+    publishedAt: source.published_at ?? now,
+    updatedAt: now,
+    metadataJson: JSON.stringify(source.metadata ?? {}),
   };
 
-  await db
-    .prepare(
-      `
-      INSERT INTO sources (
-        id, upstream_repo, source_repo, tracked_branch, display_name, summary,
-        visibility, stars, forks, last_pushed_at, verified, verified_by_login,
-        published_by_login, published_at, updated_at, metadata_json
-      ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-      )
-      ON CONFLICT(id) DO UPDATE SET
-        upstream_repo = excluded.upstream_repo,
-        source_repo = excluded.source_repo,
-        tracked_branch = excluded.tracked_branch,
-        display_name = excluded.display_name,
-        summary = excluded.summary,
-        visibility = excluded.visibility,
-        stars = excluded.stars,
-        forks = excluded.forks,
-        last_pushed_at = excluded.last_pushed_at,
-        verified = excluded.verified,
-        verified_by_login = excluded.verified_by_login,
-        published_by_login = excluded.published_by_login,
-        updated_at = excluded.updated_at,
-        metadata_json = excluded.metadata_json
-    `
-    )
-    .bind(
-      record.id,
-      record.upstream_repo,
-      record.source_repo,
-      record.tracked_branch,
-      record.display_name,
-      record.summary,
-      record.visibility,
-      record.stars,
-      record.forks,
-      record.last_pushed_at,
-      record.verified,
-      record.verified_by_login,
-      record.published_by_login,
-      record.published_at,
-      record.updated_at,
-      record.metadata_json
-    )
-    .run();
+  await orm.insert(sources).values(record).onConflictDoUpdate({
+    target: sources.id,
+    set: {
+      upstreamRepo: record.upstreamRepo,
+      sourceRepo: record.sourceRepo,
+      trackedBranch: record.trackedBranch,
+      displayName: record.displayName,
+      summary: record.summary,
+      visibility: record.visibility,
+      stars: record.stars,
+      forks: record.forks,
+      lastPushedAt: record.lastPushedAt,
+      verified: record.verified,
+      verifiedByLogin: record.verifiedByLogin,
+      publishedByLogin: record.publishedByLogin,
+      updatedAt: record.updatedAt,
+      metadataJson: record.metadataJson,
+    },
+  });
 
-  return record;
+  return rowToSource(record);
 }
 
 export async function unpublishSource(db, sourceId, identity) {
+  const orm = drizzle(db);
   const now = new Date().toISOString();
-  await db
-    .prepare(
-      `
-      UPDATE sources
-      SET visibility = 'private',
-          updated_at = ?,
-          published_by_login = ?
-      WHERE id = ?
-    `
-    )
-    .bind(now, identity.login, sourceId)
-    .run();
+  await orm
+    .update(sources)
+    .set({
+      visibility: "private",
+      updatedAt: now,
+      publishedByLogin: identity.login,
+    })
+    .where(eq(sources.id, sourceId));
 
   return { id: sourceId, visibility: "private", updated_at: now };
 }

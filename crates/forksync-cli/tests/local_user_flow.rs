@@ -236,7 +236,7 @@ fn init_persists_output_branch_sources_and_registry_opt_in() {
     ))
     .expect("parse generated config from main branch");
     assert_eq!(config.branches.output, "release/v2");
-    assert_eq!(config.workflow.action_ref, "samfinton/forksync@v1");
+    assert_eq!(config.workflow.action_ref, "monadoid/forksync@v1");
     assert!(config.registry.published);
     assert_eq!(config.sources.len(), 1);
     assert_eq!(config.sources[0].repo, "acme/patches");

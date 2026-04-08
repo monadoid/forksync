@@ -61,7 +61,7 @@ The design rule is simple:
 - upstream is the base truth
 - your fork changes are a patch layer
 - imported public sources are replayed before your local commits
-- agent repair is the exception path, not the primary path
+- ForkSync automatically resolves what it can first, then uses the agent for conflicts that still need repair
 
 ## Public Sources
 
@@ -86,14 +86,19 @@ forksync registry list
 forksync registry remove owner/repo#main
 ```
 
-The repository also contains a Cloudflare Worker + D1 scaffold under [`registry/`](/Users/samfinton/Documents/Programming/forksync/registry) for a public browse/search/select experience.
+The repository also contains a Cloudflare Worker + D1 scaffold under `registry/` for a public browse/search/select experience.
+
+Current registry URLs:
+
+- production: `https://forksync-registry-prod.prosammer.workers.dev`
+- staging: `https://forksync-registry-staging.prosammer.workers.dev`
 
 ## GitHub Action
 
 Generated workflows use:
 
 ```yaml
-uses: samfinton/forksync@v1
+uses: monadoid/forksync@v1
 ```
 
 The action is a JavaScript launcher that prefers prebuilt release binaries and only falls back to source builds as a dev escape hatch.
@@ -112,7 +117,7 @@ Important defaults:
 - output branch: detected default branch, usually `main`
 - live branch: `forksync/live`
 - patch/debug branch: `forksync/patches`
-- default action ref: `samfinton/forksync@v1`
+- default action ref: `monadoid/forksync@v1`
 - validation mode: `none` unless you provide commands
 - public agent choices: `OpenCode` and `No AI`
 - default OpenCode model: `opencode/gpt-5-nano`
@@ -153,8 +158,8 @@ Use:
 - [ ] Finish standing conflict PR reuse end to end on GitHub-hosted runs.
 - [ ] Expand GitHub-side auth and infra failure coverage.
 - [ ] Add an interactive validation wizard instead of only flag-based validation setup.
-- [ ] Finish public registry publish/update/unpublish from the Rust CLI against the deployed Worker.
-- [ ] Deploy the Cloudflare registry and document its public URL and operating model.
+- [ ] Finish public registry publish/update/unpublish from the Rust CLI against the deployed Worker with stronger end-to-end coverage.
+- [ ] Add a custom registry domain and document its long-term operating model.
 - [ ] Add example configs, troubleshooting docs, and end-user release/update guidance.
 - [ ] Decide the long-term fallback plan if OpenCode runtime or free-model assumptions change materially.
 - [ ] Decide whether future public sharing should stay registry-style or evolve toward richer patch stacking.

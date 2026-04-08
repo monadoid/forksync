@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "description": "Git-first fork sync tooling for public and local workflows",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/monadoid/forksync.git"
+  },
+  "homepage": "https://github.com/monadoid/forksync",
+  "bugs": {
+    "url": "https://github.com/monadoid/forksync/issues"
+  },
   "type": "commonjs",
   "publishConfig": {
     "access": "public"

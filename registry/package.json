@@ -2,10 +2,19 @@
   "name": "forksync-registry",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "drizzle-orm": "^0.44.5"
+  },
+  "devDependencies": {
+    "wrangler": "^4.11.1"
+  },
   "scripts": {
     "test": "node --test",
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "migrate": "wrangler d1 migrations apply forksync-registry --local"
+    "dev": "wrangler dev --env staging",
+    "deploy:staging": "wrangler deploy --env staging",
+    "deploy:prod": "wrangler deploy --env production",
+    "migrate:local": "wrangler d1 migrations apply forksync-registry-staging --local",
+    "migrate:staging": "wrangler d1 migrations apply forksync-registry-staging --env staging --remote",
+    "migrate:prod": "wrangler d1 migrations apply forksync-registry-prod --env production --remote"
   }
 }

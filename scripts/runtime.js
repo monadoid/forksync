@@ -231,7 +231,7 @@ function buildReleaseBinary({ buildRoot, executableName, cachedPath }) {
 async function resolveForkSyncBinary({
   binaryPath,
   binaryVersion = "latest",
-  repository = "samfinton/forksync",
+  repository = "monadoid/forksync",
   allowBuildFallback = false,
   sourceBuildRoot,
   cacheRoot = path.join(os.homedir(), ".cache", "forksync"),

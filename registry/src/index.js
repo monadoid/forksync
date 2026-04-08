@@ -1,5 +1,5 @@
-import { requireGithubIdentity } from "./auth.js";
-import { getSourcesByIds, listSources, upsertSource, unpublishSource } from "./db.js";
+import { requireGithubIdentity, verifyGithubSourceOwnership } from "./auth.js";
+import { getSourceById, getSourcesByIds, listSources, upsertSource, unpublishSource } from "./db.js";
 import { renderBootstrapCommand } from "./command.js";
 import { renderHtmlPage } from "./render.js";
 
@@ -64,7 +64,18 @@ export default {
       }
 
       const body = await readJson(request);
-      const record = await upsertSource(env.REGISTRY_DB, buildSourceRecord(body), auth.identity);
+      const source = buildSourceRecord(body);
+      const verified = await verifyGithubSourceOwnership(auth.token, source.source_repo, source.tracked_branch);
+      if (!verified.ok) {
+        return json({ error: verified.reason }, { status: verified.status });
+      }
+      source.source_repo = verified.repo;
+      source.stars = Number(verified.repoPayload.stargazers_count ?? source.stars ?? 0);
+      source.forks = Number(verified.repoPayload.forks_count ?? source.forks ?? 0);
+      source.last_pushed_at = verified.repoPayload.pushed_at ?? source.last_pushed_at ?? null;
+      source.verified = true;
+      source.verified_by_login = auth.identity.login;
+      const record = await upsertSource(env.REGISTRY_DB, source, auth.identity);
       return json({ source: record }, { status: 201 });
     }
 
@@ -75,7 +86,18 @@ export default {
       }
 
       const body = await readJson(request);
-      const record = await upsertSource(env.REGISTRY_DB, buildSourceRecord(body), auth.identity);
+      const source = buildSourceRecord(body);
+      const verified = await verifyGithubSourceOwnership(auth.token, source.source_repo, source.tracked_branch);
+      if (!verified.ok) {
+        return json({ error: verified.reason }, { status: verified.status });
+      }
+      source.source_repo = verified.repo;
+      source.stars = Number(verified.repoPayload.stargazers_count ?? source.stars ?? 0);
+      source.forks = Number(verified.repoPayload.forks_count ?? source.forks ?? 0);
+      source.last_pushed_at = verified.repoPayload.pushed_at ?? source.last_pushed_at ?? null;
+      source.verified = true;
+      source.verified_by_login = auth.identity.login;
+      const record = await upsertSource(env.REGISTRY_DB, source, auth.identity);
       return json({ source: record });
     }
 
@@ -88,6 +110,14 @@ export default {
       const body = await readJson(request);
       if (!body.source_id) {
         return new Response("source_id is required", { status: 400 });
+      }
+      const existing = await getSourceById(env.REGISTRY_DB, body.source_id);
+      if (!existing) {
+        return new Response("source_id was not found", { status: 404 });
+      }
+      const verified = await verifyGithubSourceOwnership(auth.token, existing.source_repo, existing.tracked_branch);
+      if (!verified.ok) {
+        return json({ error: verified.reason }, { status: verified.status });
       }
 
       const result = await unpublishSource(env.REGISTRY_DB, body.source_id, auth.identity);

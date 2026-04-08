@@ -456,7 +456,7 @@ impl Default for WorkflowConfig {
             runner: RunnerPreset::UbuntuLatest,
             timeout_minutes: 45,
             permissions: WorkflowPermissionConfig::default(),
-            action_ref: "samfinton/forksync@v1".to_string(),
+            action_ref: "monadoid/forksync@v1".to_string(),
             setup_wizard_enabled: true,
             setup_workflow_dispatch_inputs_enabled: true,
         }
@@ -474,7 +474,7 @@ pub struct RegistryConfig {
 impl Default for RegistryConfig {
     fn default() -> Self {
         Self {
-            endpoint: "https://registry.forksync.dev".to_string(),
+            endpoint: "https://forksync-registry-prod.prosammer.workers.dev".to_string(),
             published: false,
             source_name: None,
         }
@@ -771,7 +771,7 @@ mod tests {
         assert_eq!(config.agent.credential_mode, AgentCredentialMode::None);
         assert_eq!(config.agent.prompt_profile, PromptProfile::Reckless);
         assert_eq!(config.auth.upstream_auth.mode, UpstreamAuthMode::Anonymous);
-        assert_eq!(config.workflow.action_ref, "samfinton/forksync@v1");
+        assert_eq!(config.workflow.action_ref, "monadoid/forksync@v1");
         assert!(config.sources.is_empty());
         assert!(!config.registry.published);
         assert!(config.safety.allow_force_push_output_branch);

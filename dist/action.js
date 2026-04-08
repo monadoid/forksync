@@ -55,7 +55,7 @@ async function ensureBinary() {
   const repository =
     getInput("action-repository", "").trim() ||
     process.env.GITHUB_ACTION_REPOSITORY ||
-    "samfinton/forksync";
+    "monadoid/forksync";
 
   return runtime.resolveForkSyncBinary({
     binaryPath: directBinary,

@@ -6,6 +6,9 @@
 /.cargo/
 /.idea/
 /.vscode/
+/node_modules/
+/registry/node_modules/
+/registry/.wrangler/
 
 # OS
 .DS_Store
