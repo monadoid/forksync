@@ -1,6 +1,6 @@
 {
-  "name": "forksync",
-  "version": "0.1.0",
+  "name": "@tabslabs/forksync",
+  "version": "0.1.2",
   "description": "Git-first fork sync tooling for public and local workflows",
   "license": "MIT",
   "repository": {

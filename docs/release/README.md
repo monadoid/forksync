@@ -21,12 +21,12 @@ The action verifies release downloads against a sibling `.sha256` file when avai
 
 ## npm launcher
 
-The npm package name is `forksync`.
+The npm package name is `@tabslabs/forksync`.
 
 Typical usage:
 
 ```bash
-pnpx forksync init
+pnpx @tabslabs/forksync init
 ```
 
 The launcher accepts pass-through CLI arguments and wrapper-only overrides:

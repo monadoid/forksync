@@ -15,7 +15,7 @@ The intended user flow is:
 Public install target:
 
 ```bash
-pnpx forksync init
+pnpx @tabslabs/forksync init
 ```
 
 Current repo-local dogfood flow:
