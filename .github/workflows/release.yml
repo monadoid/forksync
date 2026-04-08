@@ -23,6 +23,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   build:
@@ -122,14 +123,19 @@ jobs:
           git push origin refs/tags/v1 --force
 
       - name: Update npm package version
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_npm }}
+        if: ${{ (github.event_name != 'workflow_dispatch' || inputs.publish_npm) && secrets.NPM_TOKEN != '' }}
         shell: bash
         run: |
           PACKAGE_VERSION="${RELEASE_TAG#v}"
           npm version --no-git-tag-version "$PACKAGE_VERSION"
 
+      - name: Note npm publish skipped
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_npm || github.event_name != 'workflow_dispatch') && secrets.NPM_TOKEN == '' }}
+        shell: bash
+        run: echo "Skipping npm publish because NPM_TOKEN is not configured."
+
       - name: Publish npm package
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_npm }}
+        if: ${{ (github.event_name != 'workflow_dispatch' || inputs.publish_npm) && secrets.NPM_TOKEN != '' }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public
