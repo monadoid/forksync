@@ -21,6 +21,8 @@ pub struct PatchDerivationRequest {
 pub struct PatchCommit {
     pub sha: String,
     pub summary: String,
+    pub excluded_paths: Vec<PathBuf>,
+    pub source_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +145,14 @@ pub trait GitBackend: Send + Sync {
         remote_name: &str,
         updates: &[LeasedRefUpdate],
     ) -> Result<(), GitError>;
+    fn fetch_branch_to_local_ref(
+        &self,
+        repo_path: &Path,
+        remote_spec: &str,
+        branch: &str,
+        local_ref: &str,
+    ) -> Result<(), GitError>;
+    fn merge_base(&self, repo_path: &Path, left: &str, right: &str) -> Result<String, GitError>;
     fn add_detached_worktree(
         &self,
         repo_path: &Path,
@@ -505,6 +515,29 @@ impl GitBackend for SystemGitBackend {
         Ok(())
     }
 
+    fn fetch_branch_to_local_ref(
+        &self,
+        repo_path: &Path,
+        remote_spec: &str,
+        branch: &str,
+        local_ref: &str,
+    ) -> Result<(), GitError> {
+        self.run_git(
+            repo_path,
+            [
+                "fetch",
+                "--force",
+                remote_spec,
+                &format!("refs/heads/{branch}:{local_ref}"),
+            ],
+        )
+        .map(|_| ())
+    }
+
+    fn merge_base(&self, repo_path: &Path, left: &str, right: &str) -> Result<String, GitError> {
+        self.run_git(repo_path, ["merge-base", left, right])
+    }
+
     fn add_detached_worktree(
         &self,
         repo_path: &Path,
@@ -582,6 +615,14 @@ impl GitBackend for SystemGitBackend {
                 Some(PatchCommit {
                     sha: sha.to_string(),
                     summary: summary.to_string(),
+                    excluded_paths: excluded_paths_for_commit(
+                        self,
+                        &request.repo_path,
+                        sha,
+                        &request.ignored_paths,
+                    )
+                    .ok()?,
+                    source_name: None,
                 })
             })
             .collect())
@@ -593,10 +634,40 @@ impl GitBackend for SystemGitBackend {
         let mut applied_commits = Vec::new();
 
         for patch in &request.patch_commits {
+            if patch.excluded_paths.is_empty() {
+                let command = render_command(
+                    &request.repo_path,
+                    &[
+                        OsStr::new("cherry-pick"),
+                        OsStr::new("--allow-empty"),
+                        OsStr::new(&patch.sha),
+                    ],
+                );
+                let output = Command::new("git")
+                    .arg("-C")
+                    .arg(&request.repo_path)
+                    .args(["cherry-pick", "--allow-empty", &patch.sha])
+                    .output()
+                    .map_err(|source| GitError::Io { command, source })?;
+
+                if !output.status.success() {
+                    return Ok(ReplayResult {
+                        status: ReplayStatus::Conflict,
+                        applied_commits,
+                        conflict_commit: Some(patch.sha.clone()),
+                        head_sha: self.head_sha(&request.repo_path).ok(),
+                    });
+                }
+
+                applied_commits.push(patch.sha.clone());
+                continue;
+            }
+
             let command = render_command(
                 &request.repo_path,
                 &[
                     OsStr::new("cherry-pick"),
+                    OsStr::new("--no-commit"),
                     OsStr::new("--allow-empty"),
                     OsStr::new(&patch.sha),
                 ],
@@ -604,17 +675,82 @@ impl GitBackend for SystemGitBackend {
             let output = Command::new("git")
                 .arg("-C")
                 .arg(&request.repo_path)
-                .args(["cherry-pick", "--allow-empty", &patch.sha])
+                .args(["cherry-pick", "--no-commit", "--allow-empty", &patch.sha])
                 .output()
                 .map_err(|source| GitError::Io { command, source })?;
 
             if !output.status.success() {
+                let conflicted_paths = self
+                    .run_git(
+                        &request.repo_path,
+                        ["diff", "--name-only", "--diff-filter=U"],
+                    )
+                    .unwrap_or_default()
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                let excluded_conflicts_only = !conflicted_paths.is_empty()
+                    && conflicted_paths.iter().all(|path| {
+                        patch
+                            .excluded_paths
+                            .iter()
+                            .any(|excluded| excluded.to_string_lossy().as_ref() == path)
+                    });
+                if excluded_conflicts_only {
+                    let mut restore_args = vec![
+                        "restore".to_string(),
+                        "--source=HEAD".to_string(),
+                        "--staged".to_string(),
+                        "--worktree".to_string(),
+                        "--".to_string(),
+                    ];
+                    restore_args.extend(
+                        patch
+                            .excluded_paths
+                            .iter()
+                            .map(|path| path.to_string_lossy().into_owned()),
+                    );
+                    self.run_git(&request.repo_path, restore_args).map(|_| ())?;
+                    self.run_git(
+                        &request.repo_path,
+                        ["commit", "--allow-empty", "-m", &patch.summary],
+                    )
+                    .map(|_| ())?;
+                    applied_commits.push(patch.sha.clone());
+                    continue;
+                }
+
                 return Ok(ReplayResult {
                     status: ReplayStatus::Conflict,
                     applied_commits,
                     conflict_commit: Some(patch.sha.clone()),
                     head_sha: self.head_sha(&request.repo_path).ok(),
                 });
+            }
+
+            if !patch.excluded_paths.is_empty() {
+                let mut restore_args = vec![
+                    "restore".to_string(),
+                    "--source=HEAD".to_string(),
+                    "--staged".to_string(),
+                    "--worktree".to_string(),
+                    "--".to_string(),
+                ];
+                restore_args.extend(
+                    patch
+                        .excluded_paths
+                        .iter()
+                        .map(|path| path.to_string_lossy().into_owned()),
+                );
+                self.run_git(&request.repo_path, restore_args).map(|_| ())?;
+
+                self.run_git(
+                    &request.repo_path,
+                    ["commit", "--allow-empty", "-m", &patch.summary],
+                )
+                .map(|_| ())?;
             }
 
             applied_commits.push(patch.sha.clone());
@@ -644,17 +780,7 @@ fn commit_changes_only_ignored_paths(
     sha: &str,
     ignored_paths: &[PathBuf],
 ) -> Result<bool, GitError> {
-    if ignored_paths.is_empty() {
-        return Ok(false);
-    }
-
-    let output = git.run_git(repo_path, ["show", "--format=", "--name-only", sha])?;
-    let changed_paths = output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>();
-
+    let changed_paths = changed_paths_for_commit(git, repo_path, sha)?;
     if changed_paths.is_empty() {
         return Ok(false);
     }
@@ -664,6 +790,41 @@ fn commit_changes_only_ignored_paths(
             .iter()
             .any(|ignored| ignored.to_string_lossy().as_ref() == *changed)
     }))
+}
+
+fn excluded_paths_for_commit(
+    git: &SystemGitBackend,
+    repo_path: &Path,
+    sha: &str,
+    ignored_paths: &[PathBuf],
+) -> Result<Vec<PathBuf>, GitError> {
+    if ignored_paths.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    Ok(changed_paths_for_commit(git, repo_path, sha)?
+        .into_iter()
+        .filter(|changed| {
+            ignored_paths
+                .iter()
+                .any(|ignored| ignored.to_string_lossy().as_ref() == changed.as_str())
+        })
+        .map(PathBuf::from)
+        .collect())
+}
+
+fn changed_paths_for_commit(
+    git: &SystemGitBackend,
+    repo_path: &Path,
+    sha: &str,
+) -> Result<Vec<String>, GitError> {
+    let output = git.run_git(repo_path, ["show", "--format=", "--name-only", sha])?;
+    Ok(output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect())
 }
 
 #[cfg(test)]

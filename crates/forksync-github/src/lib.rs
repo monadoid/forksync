@@ -1,5 +1,8 @@
 use forksync_config::{AgentProvider, PermissionLevel, RepoConfig, RunnerPreset, TriggerMode};
+use serde::Deserialize;
 use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use thiserror::Error;
 use tracing::{debug, instrument};
 
@@ -22,6 +25,7 @@ pub struct FailureSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailurePrPayload {
     pub branch: String,
+    pub base_branch: String,
     pub title_prefix: String,
     pub labels: Vec<String>,
     pub assign_users: Vec<String>,
@@ -70,6 +74,7 @@ pub fn build_failure_pr_payload(
 
     Some(FailurePrPayload {
         branch: config.notifications.on_failure.pr_branch.clone(),
+        base_branch: config.branches.output.clone(),
         title_prefix: config.notifications.on_failure.pr_title_prefix.clone(),
         labels: config.notifications.on_failure.pr_labels.clone(),
         assign_users: config.notifications.on_failure.assign_users.clone(),
@@ -83,11 +88,39 @@ pub fn build_failure_pr_payload(
 pub enum GithubError {
     #[error("github reporting is not implemented")]
     NotImplemented,
+    #[error("gh CLI is not available")]
+    MissingGh,
+    #[error("gh command `{command}` failed with status {status}: {stderr}")]
+    CommandFailed {
+        command: String,
+        status: i32,
+        stderr: String,
+    },
+    #[error("failed to run `{command}`: {source}")]
+    Io {
+        command: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to parse gh JSON response: {0}")]
+    Parse(String),
 }
 
 pub trait FailureReporter: Send + Sync {
     fn upsert_failure_pr(&self, payload: &FailurePrPayload)
     -> Result<FailurePrHandle, GithubError>;
+}
+
+impl<T> FailureReporter for Box<T>
+where
+    T: FailureReporter + ?Sized,
+{
+    fn upsert_failure_pr(
+        &self,
+        payload: &FailurePrPayload,
+    ) -> Result<FailurePrHandle, GithubError> {
+        (**self).upsert_failure_pr(payload)
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -99,6 +132,77 @@ impl FailureReporter for NoopFailureReporter {
         _payload: &FailurePrPayload,
     ) -> Result<FailurePrHandle, GithubError> {
         Err(GithubError::NotImplemented)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GhCliFailureReporter {
+    repo_path: PathBuf,
+}
+
+impl GhCliFailureReporter {
+    pub fn new(repo_path: impl Into<PathBuf>) -> Self {
+        Self {
+            repo_path: repo_path.into(),
+        }
+    }
+}
+
+impl FailureReporter for GhCliFailureReporter {
+    fn upsert_failure_pr(
+        &self,
+        payload: &FailurePrPayload,
+    ) -> Result<FailurePrHandle, GithubError> {
+        ensure_gh_exists()?;
+        let body = render_pr_body(payload);
+        if let Some(existing) = find_existing_pr(&self.repo_path, payload)? {
+            let mut args = vec![
+                "pr".to_string(),
+                "edit".to_string(),
+                existing.number.to_string(),
+                "--title".to_string(),
+                payload.summary.title.clone(),
+                "--body".to_string(),
+                body,
+            ];
+            for label in &payload.labels {
+                args.push("--add-label".to_string());
+                args.push(label.clone());
+            }
+            run_gh(&self.repo_path, &args)?;
+            return Ok(existing);
+        }
+
+        let mut args = vec![
+            "pr".to_string(),
+            "create".to_string(),
+            "--base".to_string(),
+            payload.base_branch.clone(),
+            "--head".to_string(),
+            payload.branch.clone(),
+            "--title".to_string(),
+            payload.summary.title.clone(),
+            "--body".to_string(),
+            body,
+        ];
+        for label in &payload.labels {
+            args.push("--label".to_string());
+            args.push(label.clone());
+        }
+        for assignee in &payload.assign_users {
+            args.push("--assignee".to_string());
+            args.push(assignee.clone());
+        }
+        for reviewer in &payload.request_review_users {
+            args.push("--reviewer".to_string());
+            args.push(reviewer.clone());
+        }
+
+        let url = run_gh_capture(&self.repo_path, &args)?;
+        Ok(FailurePrHandle {
+            number: 0,
+            url: (!url.trim().is_empty()).then(|| url.trim().to_string()),
+        })
     }
 }
 
@@ -252,6 +356,106 @@ fn cache_key_fragment(value: &str) -> String {
         .collect()
 }
 
+#[derive(Debug, Deserialize)]
+struct GhPullRequestSummary {
+    number: u64,
+    url: Option<String>,
+}
+
+fn ensure_gh_exists() -> Result<(), GithubError> {
+    let output = Command::new("gh").arg("--version").output();
+    match output {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(_) => Err(GithubError::MissingGh),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Err(GithubError::MissingGh),
+        Err(source) => Err(GithubError::Io {
+            command: "gh --version".to_string(),
+            source,
+        }),
+    }
+}
+
+fn find_existing_pr(
+    repo_path: &Path,
+    payload: &FailurePrPayload,
+) -> Result<Option<FailurePrHandle>, GithubError> {
+    let output = run_gh_capture(
+        repo_path,
+        &[
+            "pr".to_string(),
+            "list".to_string(),
+            "--head".to_string(),
+            payload.branch.clone(),
+            "--base".to_string(),
+            payload.base_branch.clone(),
+            "--state".to_string(),
+            "open".to_string(),
+            "--json".to_string(),
+            "number,url".to_string(),
+        ],
+    )?;
+    let prs = serde_json::from_str::<Vec<GhPullRequestSummary>>(&output)
+        .map_err(|error| GithubError::Parse(error.to_string()))?;
+    Ok(prs.into_iter().next().map(|pr| FailurePrHandle {
+        number: pr.number,
+        url: pr.url,
+    }))
+}
+
+fn render_pr_body(payload: &FailurePrPayload) -> String {
+    let mut body = payload.summary.body.clone();
+    if !payload.mention_users.is_empty() {
+        let mentions = payload
+            .mention_users
+            .iter()
+            .map(|user| format!("@{user}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let _ = write!(body, "\n\n{}", mentions);
+    }
+    body
+}
+
+fn run_gh(repo_path: &Path, args: &[String]) -> Result<(), GithubError> {
+    let command = format!("gh {}", args.join(" "));
+    let output = Command::new("gh")
+        .current_dir(repo_path)
+        .args(args)
+        .output()
+        .map_err(|source| GithubError::Io {
+            command: command.clone(),
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(GithubError::CommandFailed {
+            command,
+            status: output.status.code().unwrap_or(-1),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn run_gh_capture(repo_path: &Path, args: &[String]) -> Result<String, GithubError> {
+    let command = format!("gh {}", args.join(" "));
+    let output = Command::new("gh")
+        .current_dir(repo_path)
+        .args(args)
+        .output()
+        .map_err(|source| GithubError::Io {
+            command: command.clone(),
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(GithubError::CommandFailed {
+            command,
+            status: output.status.code().unwrap_or(-1),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,7 +475,7 @@ mod tests {
         assert!(workflow.contents.contains("cron: '*/15 * * * *'"));
         assert!(workflow.contents.contains("uses: actions/cache@v4"));
         assert!(workflow.contents.contains("path: ~/.cache/forksync"));
-        assert!(workflow.contents.contains("uses: samfinton/forksync@main"));
+        assert!(workflow.contents.contains("uses: samfinton/forksync@v1"));
         assert!(workflow.contents.contains("trigger: schedule"));
         assert!(workflow.contents.contains("install-opencode: true"));
         assert!(workflow.contents.contains("contents: write"));

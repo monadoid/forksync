@@ -8,15 +8,17 @@ use dotenvy::from_path_override;
 use forksync_agent::OpenCodeFactory;
 use forksync_config::{
     AgentProvider, ConfigIoError, DEFAULT_CONFIG_PATH, DEFAULT_WORKFLOW_PATH, RepoConfig,
-    RunnerPreset, TriggerSource, load_from_path, to_yaml_string,
+    RunnerPreset, SourceConfig, TriggerSource, load_from_path, to_yaml_string,
 };
 use forksync_engine::{InitRequest, SyncEngine, SyncRequest, default_state_file_path};
 use forksync_git::{GitBackend, SystemGitBackend};
-use forksync_github::{NoopFailureReporter, generate_sync_workflow};
+use forksync_github::{
+    FailureReporter, GhCliFailureReporter, NoopFailureReporter, generate_sync_workflow,
+};
+use forksync_state::{FileStateStore, StateStore};
 use init_wizard::{
     InitPushPreflight, resolve_init_preferences, run_init_wizard, should_run_init_wizard,
 };
-use forksync_state::{FileStateStore, StateStore};
 use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -24,6 +26,21 @@ use std::process::Command as ProcessCommand;
 use std::thread::sleep;
 use std::time::Duration;
 use tracing::{debug, info, instrument};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum PublicAgentProvider {
+    OpenCode,
+    Disabled,
+}
+
+impl From<PublicAgentProvider> for AgentProvider {
+    fn from(value: PublicAgentProvider) -> Self {
+        match value {
+            PublicAgentProvider::OpenCode => AgentProvider::OpenCode,
+            PublicAgentProvider::Disabled => AgentProvider::Disabled,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -96,11 +113,24 @@ pub struct InitArgs {
     #[arg(long)]
     pub test_command: Option<String>,
 
-    #[arg(long = "manual-push-output", default_value_t = false, alias = "no-auto-push")]
+    #[arg(
+        long = "manual-push-output",
+        default_value_t = false,
+        alias = "no-auto-push"
+    )]
     pub manual_push_output: bool,
 
     #[arg(long, value_enum)]
-    pub agent_provider: Option<AgentProvider>,
+    pub agent_provider: Option<PublicAgentProvider>,
+
+    #[arg(long)]
+    pub output_branch: Option<String>,
+
+    #[arg(long = "source")]
+    pub sources: Vec<String>,
+
+    #[arg(long, default_value_t = false)]
+    pub publish_to_registry: bool,
 }
 
 #[derive(Debug, Args)]
@@ -223,10 +253,35 @@ pub struct DevInitArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum RegistryCommand {
-    Publish,
-    Add,
-    Remove,
-    List,
+    Publish(RegistryPublishArgs),
+    Add(RegistryAddArgs),
+    Remove(RegistryRemoveArgs),
+    List(RegistryListArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct RegistryPublishArgs {
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RegistryAddArgs {
+    pub source: String,
+
+    #[arg(long)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct RegistryRemoveArgs {
+    pub source: String,
+}
+
+#[derive(Debug, Args)]
+pub struct RegistryListArgs {
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
 }
 
 #[tokio::main]
@@ -263,7 +318,7 @@ async fn main() {
         Command::Status(args) => run_status(&repo_path, &config_path, args),
         Command::Dev(args) => run_dev(&repo_path, args),
         Command::Rollback(_) => Err(anyhow!("rollback is not implemented yet")),
-        Command::Registry(_) => Err(anyhow!("registry commands are not implemented yet")),
+        Command::Registry(args) => run_registry(&repo_path, &config_path, args),
     };
 
     if let Err(error) = result {
@@ -284,19 +339,23 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
         SystemGitBackend,
         OpenCodeFactory,
         FileStateStore::new(state_path),
-        NoopFailureReporter,
+        build_failure_reporter(repo_path),
     );
 
-    let push_preflight = probe_init_push_preflight(repo_path)?;
+    let requested_output_branch = args.output_branch.clone();
+    let push_preflight = probe_init_push_preflight(repo_path, requested_output_branch.as_deref())?;
     let should_run_wizard = should_run_init_wizard(
         args.non_interactive,
         std::io::stdin().is_terminal(),
         std::io::stdout().is_terminal(),
         args.manual_push_output,
-        args.agent_provider,
+        args.agent_provider.map(Into::into),
     );
     let wizard_decisions = if should_run_wizard {
-        Some(run_init_wizard(push_preflight.clone())?)
+        Some(run_init_wizard(
+            push_preflight.clone(),
+            should_offer_registry_publish_prompt(repo_path)?,
+        )?)
     } else {
         None
     };
@@ -304,9 +363,11 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
         &push_preflight,
         should_run_wizard,
         args.manual_push_output,
-        args.agent_provider,
+        args.agent_provider.map(Into::into),
+        args.publish_to_registry,
         wizard_decisions,
     );
+    let sources = parse_source_flags(&args.sources)?;
 
     let report = engine.init(&InitRequest {
         repo_path: repo_path.to_path_buf(),
@@ -321,10 +382,13 @@ fn run_init(repo_path: &Path, config_path: &Path, args: InitArgs) -> Result<()> 
         upstream_remote: args.upstream_remote,
         upstream_repo: args.upstream_repo,
         upstream_branch: args.upstream_branch,
+        output_branch: requested_output_branch,
         build_command: args.build_command,
         test_command: args.test_command,
         auto_push: resolved_preferences.auto_push,
         agent_provider: resolved_preferences.agent_provider,
+        publish_to_registry: resolved_preferences.publish_to_registry,
+        sources,
     })?;
     print_init_summary(&report, &resolved_preferences, &push_preflight)?;
 
@@ -352,9 +416,20 @@ fn print_init_summary(
     );
 
     let next_message = if report.manual_push_branches.is_empty() {
-        format!(
-            "You are set up. If you want to test the flow locally, run `forksync sync --trigger local-debug` from this repo."
-        )
+        if let Some(bootstrap_pr_url) = &report.bootstrap_pr_url {
+            format!(
+                "Branch protection blocked a direct push, so ForkSync opened a bootstrap PR for you: {bootstrap_pr_url}"
+            )
+        } else if let Some(bootstrap_pr_branch) = &report.bootstrap_pr_branch {
+            format!(
+                "Branch protection blocked a direct push. ForkSync published `{bootstrap_pr_branch}` for a bootstrap PR. Open or merge that PR, then keep working on `{}`.",
+                report.output_branch
+            )
+        } else if resolved_preferences.publish_to_registry {
+            "You are set up. If this fork is public and you are authenticated with GitHub CLI, run `forksync registry publish` when you want it listed in the public registry.".to_string()
+        } else {
+            "You are set up. If you want to test the flow locally, run `forksync sync --trigger local-debug` from this repo.".to_string()
+        }
     } else if let Some(reason) = &push_preflight.reason {
         format!(
             "ForkSync did not publish the managed branches automatically because {reason}.\nRun this next:\n{manual_push_command}"
@@ -380,45 +455,49 @@ fn print_init_summary(
     Ok(())
 }
 
-fn probe_init_push_preflight(repo_path: &Path) -> Result<InitPushPreflight> {
+fn probe_init_push_preflight(
+    repo_path: &Path,
+    requested_output_branch: Option<&str>,
+) -> Result<InitPushPreflight> {
     let git = SystemGitBackend;
     if !git.remote_exists(repo_path, "origin")? {
         return Ok(InitPushPreflight {
-            safe_to_push_main: false,
+            output_branch: requested_output_branch.unwrap_or("main").to_string(),
+            safe_to_push_output: false,
             reason: Some("no origin remote was found".to_string()),
         });
     }
 
-    let output_branch = git
+    let remote_default_branch = git
         .default_branch_for_remote(repo_path, "origin")
         .unwrap_or_else(|_| "main".to_string());
-    if output_branch != "main" {
-        return Ok(InitPushPreflight {
-            safe_to_push_main: false,
-            reason: Some(format!(
-                "origin default branch resolved to `{output_branch}` instead of `main`"
-            )),
-        });
-    }
+    let output_branch = requested_output_branch.unwrap_or(&remote_default_branch);
 
     let dry_run = ProcessCommand::new("git")
         .arg("-C")
         .arg(repo_path)
-        .args(["push", "--dry-run", "origin", "HEAD:refs/heads/main"])
+        .args([
+            "push",
+            "--dry-run",
+            "origin",
+            &format!("HEAD:refs/heads/{output_branch}"),
+        ])
         .output()
-        .context("run init push preflight against origin/main")?;
+        .with_context(|| format!("run init push preflight against origin/{output_branch}"))?;
 
     if dry_run.status.success() {
         Ok(InitPushPreflight {
-            safe_to_push_main: true,
+            output_branch: output_branch.to_string(),
+            safe_to_push_output: true,
             reason: None,
         })
     } else {
         let stderr = String::from_utf8_lossy(&dry_run.stderr).trim().to_string();
         Ok(InitPushPreflight {
-            safe_to_push_main: false,
+            output_branch: output_branch.to_string(),
+            safe_to_push_output: false,
             reason: Some(if stderr.is_empty() {
-                "git push --dry-run origin HEAD:refs/heads/main did not succeed".to_string()
+                format!("git push --dry-run origin HEAD:refs/heads/{output_branch} did not succeed")
             } else {
                 stderr
             }),
@@ -553,6 +632,157 @@ fn run_status(repo_path: &Path, config_path: &Path, args: StatusArgs) -> Result<
         println!("History entries: {}", state.history.len());
     }
 
+    Ok(())
+}
+
+fn run_registry(repo_path: &Path, config_path: &Path, args: RegistryArgs) -> Result<()> {
+    match args.command {
+        RegistryCommand::Publish(args) => run_registry_publish(repo_path, config_path, args),
+        RegistryCommand::Add(args) => run_registry_add(config_path, args),
+        RegistryCommand::Remove(args) => run_registry_remove(config_path, args),
+        RegistryCommand::List(args) => run_registry_list(config_path, args),
+    }
+}
+
+fn run_registry_add(config_path: &Path, args: RegistryAddArgs) -> Result<()> {
+    let mut config = load_repo_config(config_path)?;
+    let mut source = parse_source_reference(&args.source)?;
+    if let Some(name) = args.name {
+        source.name = name;
+    }
+
+    if config
+        .sources
+        .iter()
+        .any(|existing| existing.repo == source.repo && existing.branch == source.branch)
+    {
+        return Err(anyhow!(
+            "source {}#{} is already configured",
+            source.repo,
+            source.branch
+        ));
+    }
+
+    config.sources.push(source.clone());
+    config.sources.sort_by(|left, right| {
+        (&left.name, &left.repo, &left.branch).cmp(&(&right.name, &right.repo, &right.branch))
+    });
+    write_repo_config(config_path, &config)?;
+    println!(
+        "Added source {} ({}#{})",
+        source.name, source.repo, source.branch
+    );
+    Ok(())
+}
+
+fn run_registry_remove(config_path: &Path, args: RegistryRemoveArgs) -> Result<()> {
+    let mut config = load_repo_config(config_path)?;
+    let original_len = config.sources.len();
+    config.sources.retain(|source| {
+        let canonical = format!("{}#{}", source.repo, source.branch);
+        source.name != args.source && canonical != args.source
+    });
+    if config.sources.len() == original_len {
+        return Err(anyhow!("source `{}` was not configured", args.source));
+    }
+
+    write_repo_config(config_path, &config)?;
+    println!("Removed source {}", args.source);
+    Ok(())
+}
+
+fn run_registry_list(config_path: &Path, args: RegistryListArgs) -> Result<()> {
+    let config = load_repo_config(config_path)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&config.sources)
+                .context("serialize configured sources as JSON")?
+        );
+        return Ok(());
+    }
+
+    if config.sources.is_empty() {
+        println!("No ForkSync sources are configured.");
+        return Ok(());
+    }
+
+    for source in config.sources {
+        println!(
+            "- {}: {}#{}{}",
+            source.name,
+            source.repo,
+            source.branch,
+            if source.enabled { "" } else { " (disabled)" }
+        );
+    }
+    Ok(())
+}
+
+fn run_registry_publish(
+    repo_path: &Path,
+    config_path: &Path,
+    args: RegistryPublishArgs,
+) -> Result<()> {
+    let mut config = load_repo_config(config_path)?;
+    if !config.registry.published && !args.force {
+        return Err(anyhow!(
+            "registry publishing is not enabled in this repo yet; re-run `forksync init` and opt in, or pass --force"
+        ));
+    }
+
+    config.registry.published = true;
+    if config.registry.source_name.is_none() {
+        config.registry.source_name = repo_path
+            .file_name()
+            .map(|value| value.to_string_lossy().into_owned());
+    }
+    let token = gh_auth_token(repo_path)?;
+    let repo_metadata = github_repo_metadata(repo_path)?;
+    if repo_metadata.is_private {
+        return Err(anyhow!(
+            "the public registry only supports public forks in v1"
+        ));
+    }
+
+    let endpoint = config.registry.endpoint.trim_end_matches('/');
+    let payload = serde_json::json!({
+        "id": format!("{}:{}", repo_metadata.name_with_owner, config.branches.output),
+        "upstream_repo": repo_metadata.parent.as_ref().map(|parent| parent.name_with_owner.clone()).unwrap_or_else(|| normalize_repo_identity(&config.upstream.repo)),
+        "source_repo": repo_metadata.name_with_owner,
+        "tracked_branch": config.branches.output,
+        "display_name": config.registry.source_name.clone().unwrap_or_else(|| repo_path.file_name().map(|value| value.to_string_lossy().into_owned()).unwrap_or_else(|| "forksync-source".to_string())),
+        "visibility": "public",
+        "stars": repo_metadata.stargazer_count,
+        "forks": repo_metadata.fork_count,
+        "last_pushed_at": repo_metadata.pushed_at,
+        "verified": true,
+        "metadata": {
+            "action_ref": config.workflow.action_ref,
+            "source_count": config.sources.len(),
+        },
+    });
+    let client = reqwest::blocking::Client::new();
+    let response = client
+        .post(format!("{endpoint}/api/publish"))
+        .bearer_auth(token)
+        .json(&payload)
+        .send()
+        .context("publish fork metadata to the ForkSync registry")?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        return Err(anyhow!(
+            "registry publish failed with status {}: {}",
+            status,
+            body.trim()
+        ));
+    }
+
+    write_repo_config(config_path, &config)?;
+
+    println!("Registry publish is enabled for this repo.");
+    println!("Published this fork to the public registry.");
     Ok(())
 }
 
@@ -1216,6 +1446,135 @@ fn resolve_path(repo_path: &Path, configured: &Path) -> PathBuf {
         configured.to_path_buf()
     } else {
         repo_path.join(configured)
+    }
+}
+
+fn write_repo_config(config_path: &Path, config: &RepoConfig) -> Result<()> {
+    forksync_config::write_to_path(config_path, config).map_err(Into::into)
+}
+
+fn parse_source_flags(values: &[String]) -> Result<Vec<SourceConfig>> {
+    let mut sources = values
+        .iter()
+        .map(|value| parse_source_reference(value))
+        .collect::<Result<Vec<_>>>()?;
+    sources.sort_by(|left, right| {
+        (&left.name, &left.repo, &left.branch).cmp(&(&right.name, &right.repo, &right.branch))
+    });
+    sources.dedup_by(|left, right| left.repo == right.repo && left.branch == right.branch);
+    Ok(sources)
+}
+
+fn parse_source_reference(value: &str) -> Result<SourceConfig> {
+    let (repo, branch) = value
+        .rsplit_once('#')
+        .ok_or_else(|| anyhow!("source `{value}` must look like `owner/repo#branch`"))?;
+    if repo.trim().is_empty() || branch.trim().is_empty() {
+        return Err(anyhow!(
+            "source `{value}` must include both a repository and branch"
+        ));
+    }
+
+    let default_name = repo
+        .rsplit('/')
+        .next()
+        .filter(|segment| !segment.is_empty())
+        .unwrap_or(repo)
+        .to_string();
+
+    Ok(SourceConfig {
+        name: default_name,
+        repo: repo.trim().to_string(),
+        branch: branch.trim().to_string(),
+        enabled: true,
+    })
+}
+
+fn should_offer_registry_publish_prompt(repo_path: &Path) -> Result<bool> {
+    let git = SystemGitBackend;
+    if !git.remote_exists(repo_path, "origin")? {
+        return Ok(false);
+    }
+
+    let origin = git.get_remote_url(repo_path, "origin")?;
+    Ok(origin.contains("github.com") || origin.contains("git@github.com:"))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct GithubRepoMetadata {
+    #[serde(rename = "nameWithOwner")]
+    name_with_owner: String,
+    #[serde(rename = "isPrivate")]
+    is_private: bool,
+    #[serde(rename = "forkCount")]
+    fork_count: u64,
+    #[serde(rename = "stargazerCount")]
+    stargazer_count: u64,
+    #[serde(rename = "pushedAt")]
+    pushed_at: Option<String>,
+    parent: Option<GithubParentRepo>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct GithubParentRepo {
+    #[serde(rename = "nameWithOwner")]
+    name_with_owner: String,
+}
+
+fn gh_auth_token(repo_path: &Path) -> Result<String> {
+    let output = ProcessCommand::new("gh")
+        .arg("auth")
+        .arg("token")
+        .current_dir(repo_path)
+        .output()
+        .context("run `gh auth token` for ForkSync registry publishing")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "`gh auth token` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn github_repo_metadata(repo_path: &Path) -> Result<GithubRepoMetadata> {
+    let output = ProcessCommand::new("gh")
+        .args([
+            "repo",
+            "view",
+            "--json",
+            "nameWithOwner,isPrivate,parent,forkCount,stargazerCount,pushedAt",
+        ])
+        .current_dir(repo_path)
+        .output()
+        .context("run `gh repo view` for ForkSync registry publishing")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "`gh repo view` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    serde_json::from_slice(&output.stdout).context("parse `gh repo view` JSON")
+}
+
+fn normalize_repo_identity(value: &str) -> String {
+    if let Some(stripped) = value.strip_prefix("https://github.com/") {
+        return stripped.trim_end_matches(".git").to_string();
+    }
+    if let Some(stripped) = value.strip_prefix("git@github.com:") {
+        return stripped.trim_end_matches(".git").to_string();
+    }
+    value.trim_end_matches(".git").to_string()
+}
+
+fn build_failure_reporter(repo_path: &Path) -> Box<dyn FailureReporter> {
+    match ProcessCommand::new("gh").arg("--version").output() {
+        Ok(output) if output.status.success() => {
+            Box::new(GhCliFailureReporter::new(repo_path.to_path_buf()))
+        }
+        _ => Box::new(NoopFailureReporter),
     }
 }
 

@@ -476,6 +476,20 @@ impl GitBackend for AuthFailureGit {
         unreachable!("push_leased_ref_updates is not reached on auth failure")
     }
 
+    fn fetch_branch_to_local_ref(
+        &self,
+        _repo_path: &Path,
+        _remote_spec: &str,
+        _branch: &str,
+        _local_ref: &str,
+    ) -> Result<(), GitError> {
+        unreachable!("fetch_branch_to_local_ref is not reached on auth failure")
+    }
+
+    fn merge_base(&self, _repo_path: &Path, _left: &str, _right: &str) -> Result<String, GitError> {
+        unreachable!("merge_base is not reached on auth failure")
+    }
+
     fn add_detached_worktree(
         &self,
         _repo_path: &Path,
@@ -635,6 +649,20 @@ impl GitBackend for InfraFailureGit {
         })
     }
 
+    fn fetch_branch_to_local_ref(
+        &self,
+        _repo_path: &Path,
+        _remote_spec: &str,
+        _branch: &str,
+        _local_ref: &str,
+    ) -> Result<(), GitError> {
+        Ok(())
+    }
+
+    fn merge_base(&self, _repo_path: &Path, _left: &str, _right: &str) -> Result<String, GitError> {
+        Ok("merge-base".to_string())
+    }
+
     fn add_detached_worktree(
         &self,
         _repo_path: &Path,
@@ -668,6 +696,8 @@ impl GitBackend for InfraFailureGit {
         Ok(vec![PatchCommit {
             sha: "patch-1".to_string(),
             summary: "local change".to_string(),
+            excluded_paths: Vec::new(),
+            source_name: None,
         }])
     }
 
@@ -804,6 +834,20 @@ impl GitBackend for ValidationFailureGit {
         Ok(())
     }
 
+    fn fetch_branch_to_local_ref(
+        &self,
+        _repo_path: &Path,
+        _remote_spec: &str,
+        _branch: &str,
+        _local_ref: &str,
+    ) -> Result<(), GitError> {
+        Ok(())
+    }
+
+    fn merge_base(&self, _repo_path: &Path, _left: &str, _right: &str) -> Result<String, GitError> {
+        Ok("merge-base".to_string())
+    }
+
     fn add_detached_worktree(
         &self,
         _repo_path: &Path,
@@ -837,6 +881,8 @@ impl GitBackend for ValidationFailureGit {
         Ok(vec![PatchCommit {
             sha: "patch-1".to_string(),
             summary: "local change".to_string(),
+            excluded_paths: Vec::new(),
+            source_name: None,
         }])
     }
 

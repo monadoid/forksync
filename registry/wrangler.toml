@@ -1,0 +1,8 @@
+name = "forksync-registry"
+main = "src/index.js"
+compatibility_date = "2026-04-08"
+
+[[d1_databases]]
+binding = "REGISTRY_DB"
+database_name = "forksync-registry"
+database_id = "00000000-0000-0000-0000-000000000000"

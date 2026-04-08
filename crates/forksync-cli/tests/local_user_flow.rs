@@ -208,6 +208,42 @@ fn init_persists_build_and_test_commands_into_generated_config() {
 }
 
 #[test]
+fn init_persists_output_branch_sources_and_registry_opt_in() {
+    let fixture = create_local_fork_fixture();
+    let source = "acme/patches#release".to_string();
+    let output = run_cli_owned(
+        &fixture.user_repo,
+        &[
+            "init".to_string(),
+            "--no-auto-push".to_string(),
+            "--output-branch".to_string(),
+            "release/v2".to_string(),
+            "--source".to_string(),
+            source,
+            "--publish-to-registry".to_string(),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "init failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let config = from_yaml_str(&git_output(
+        &fixture.user_repo,
+        ["show", "release/v2:.forksync.yml"],
+    ))
+    .expect("parse generated config from main branch");
+    assert_eq!(config.branches.output, "release/v2");
+    assert_eq!(config.workflow.action_ref, "samfinton/forksync@v1");
+    assert!(config.registry.published);
+    assert_eq!(config.sources.len(), 1);
+    assert_eq!(config.sources[0].repo, "acme/patches");
+    assert_eq!(config.sources[0].branch, "release");
+}
+
+#[test]
 fn init_no_auto_push_leaves_remote_unmodified_and_prints_exact_command() {
     let fixture = create_local_fork_fixture();
 
@@ -226,7 +262,10 @@ fn init_no_auto_push_leaves_remote_unmodified_and_prints_exact_command() {
         "git push origin forksync/patches:forksync/patches forksync/live:forksync/live main:main"
     ));
 
-    assert!(!remote_branch_exists(&fixture.fork_remote, "forksync/patches"));
+    assert!(!remote_branch_exists(
+        &fixture.fork_remote,
+        "forksync/patches"
+    ));
     assert!(!remote_branch_exists(&fixture.fork_remote, "forksync/live"));
     let remote_main_config = Command::new("git")
         .args([
@@ -348,7 +387,9 @@ fn init_manual_push_flag_and_disabled_agent_keep_remote_unbootstrapped() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("git push origin forksync/patches:forksync/patches forksync/live:forksync/live main:main"));
+    assert!(stdout.contains(
+        "git push origin forksync/patches:forksync/patches forksync/live:forksync/live main:main"
+    ));
     assert!(stdout.contains("ForkSync left the managed branch publication to you."));
 
     let local_config = from_yaml_str(&git_output(
@@ -478,6 +519,112 @@ fn sync_replays_main_commits_onto_updated_upstream() {
         state.author_base_sha.as_deref(),
         state.last_good_sync_sha.as_deref(),
         "author base should advance to the latest generated main/live state after sync"
+    );
+}
+
+#[test]
+fn sync_replays_configured_source_commits_before_local_commits() {
+    let fixture = create_local_fork_fixture();
+    let source_remote = fixture
+        .user_repo
+        .parent()
+        .expect("temp root")
+        .join("source-remote.git");
+    let source_working = fixture
+        .user_repo
+        .parent()
+        .expect("temp root")
+        .join("source-working");
+
+    git(
+        fixture.user_repo.parent().expect("temp root"),
+        [
+            "clone",
+            "--bare",
+            fixture.upstream_remote.to_str().expect("utf-8 path"),
+            source_remote.to_str().expect("utf-8 path"),
+        ],
+    );
+    git(
+        fixture.user_repo.parent().expect("temp root"),
+        [
+            "clone",
+            source_remote.to_str().expect("utf-8 path"),
+            source_working.to_str().expect("utf-8 path"),
+        ],
+    );
+    git(&source_working, ["config", "user.name", "ForkSync Test"]);
+    git(
+        &source_working,
+        ["config", "user.email", "forksync-test@example.com"],
+    );
+    fs::write(source_working.join("SOURCE.txt"), "shared source\n").expect("write source file");
+    git(&source_working, ["add", "SOURCE.txt"]);
+    git(&source_working, ["commit", "-m", "Add shared source patch"]);
+    git(&source_working, ["push", "origin", "main"]);
+
+    let init_output = run_cli_owned(
+        &fixture.user_repo,
+        &[
+            "init".to_string(),
+            "--source".to_string(),
+            format!("{}#main", source_remote.display()),
+        ],
+    );
+    assert!(
+        init_output.status.success(),
+        "init failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&init_output.stdout),
+        String::from_utf8_lossy(&init_output.stderr)
+    );
+
+    fs::write(fixture.user_repo.join("PATCH.txt"), "local patch\n").expect("write patch file");
+    git(&fixture.user_repo, ["add", "PATCH.txt"]);
+    git(&fixture.user_repo, ["commit", "-m", "Add local patch"]);
+
+    fs::write(
+        fixture.upstream_working.join("UPSTREAM.txt"),
+        "upstream change\n",
+    )
+    .expect("write upstream file");
+    git(&fixture.upstream_working, ["add", "UPSTREAM.txt"]);
+    git(
+        &fixture.upstream_working,
+        ["commit", "-m", "Add upstream change"],
+    );
+    git(
+        &fixture.upstream_working,
+        [
+            "push",
+            fixture.upstream_remote.to_str().expect("utf-8 path"),
+            "main",
+        ],
+    );
+
+    let sync_output = run_cli(
+        &fixture.user_repo,
+        ["sync", "--trigger", "local-debug", "--no-agent"],
+    );
+    assert!(
+        sync_output.status.success(),
+        "sync failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&sync_output.stdout),
+        String::from_utf8_lossy(&sync_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&sync_output.stdout);
+    assert!(stdout.contains("SyncedDeterministic"));
+    assert!(stdout.contains("Applied 1 imported source commit(s)"));
+    assert_eq!(
+        git_output(&fixture.user_repo, ["show", "main:SOURCE.txt"]),
+        "shared source"
+    );
+    assert_eq!(
+        git_output(&fixture.user_repo, ["show", "main:PATCH.txt"]),
+        "local patch"
+    );
+    assert_eq!(
+        git_output(&fixture.user_repo, ["show", "main:UPSTREAM.txt"]),
+        "upstream change"
     );
 }
 
@@ -867,6 +1014,75 @@ fn sync_ignores_managed_config_only_commits_in_patch_replay() {
 }
 
 #[test]
+fn sync_replays_mixed_commit_without_reapplying_stale_managed_file_hunks() {
+    let fixture = create_local_fork_fixture();
+
+    let init_output = run_cli(&fixture.user_repo, ["init"]);
+    assert!(init_output.status.success(), "init failed");
+
+    update_repo_config(&fixture.user_repo, |config| {
+        config.advanced.temp_branch_prefix = "forksync/tmp-one".to_string();
+    });
+    fs::write(fixture.user_repo.join("MIXED.txt"), "mixed payload\n").expect("write mixed payload");
+    git(&fixture.user_repo, ["add", ".forksync.yml", "MIXED.txt"]);
+    git(
+        &fixture.user_repo,
+        ["commit", "-m", "Commit mixed managed and normal changes"],
+    );
+
+    update_repo_config(&fixture.user_repo, |config| {
+        config.advanced.temp_branch_prefix = "forksync/tmp-two".to_string();
+    });
+    git(&fixture.user_repo, ["add", ".forksync.yml"]);
+    git(
+        &fixture.user_repo,
+        ["commit", "-m", "Update managed config again"],
+    );
+
+    fs::write(
+        fixture.upstream_working.join("UPSTREAM.txt"),
+        "upstream change\n",
+    )
+    .expect("write upstream file");
+    git(&fixture.upstream_working, ["add", "UPSTREAM.txt"]);
+    git(
+        &fixture.upstream_working,
+        ["commit", "-m", "Add upstream change"],
+    );
+    git(
+        &fixture.upstream_working,
+        [
+            "push",
+            fixture.upstream_remote.to_str().expect("utf-8 path"),
+            "main",
+        ],
+    );
+
+    let sync_output = run_cli(
+        &fixture.user_repo,
+        ["sync", "--trigger", "local-debug", "--no-agent"],
+    );
+    assert!(
+        sync_output.status.success(),
+        "sync failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&sync_output.stdout),
+        String::from_utf8_lossy(&sync_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&sync_output.stdout);
+    assert!(stdout.contains("SyncedDeterministic"));
+    assert_eq!(
+        git_output(&fixture.user_repo, ["show", "main:MIXED.txt"]),
+        "mixed payload"
+    );
+    let config = from_yaml_str(&git_output(
+        &fixture.user_repo,
+        ["show", "main:.forksync.yml"],
+    ))
+    .expect("parse updated config");
+    assert_eq!(config.advanced.temp_branch_prefix, "forksync/tmp-two");
+}
+
+#[test]
 fn sync_from_uninitialized_directory_shows_init_hint() {
     let temp = TempDir::new().expect("create tempdir");
 
@@ -1072,6 +1288,14 @@ fn install_reject_all_pushes_hook(bare_repo: &Path) {
 }
 
 fn run_cli<const N: usize>(cwd: &Path, args: [&str; N]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_forksync"))
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .expect("run forksync cli")
+}
+
+fn run_cli_owned(cwd: &Path, args: &[String]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_forksync"))
         .current_dir(cwd)
         .args(args)

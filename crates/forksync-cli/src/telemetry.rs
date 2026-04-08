@@ -29,16 +29,15 @@ impl Drop for TelemetryGuard {
 
 pub fn init_telemetry(verbose: bool, json_logs: bool) -> Result<TelemetryGuard> {
     let otel_enabled = std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").is_some();
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| {
-            EnvFilter::new(if verbose {
-                "debug"
-            } else if json_logs || otel_enabled {
-                "info"
-            } else {
-                "off"
-            })
-        });
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new(if verbose {
+            "debug"
+        } else if json_logs || otel_enabled {
+            "info"
+        } else {
+            "off"
+        })
+    });
 
     let resource = Resource::builder_empty()
         .with_attributes([

@@ -1,0 +1,24 @@
+{
+  "name": "forksync",
+  "version": "0.1.0",
+  "description": "Git-first fork sync tooling for public and local workflows",
+  "license": "MIT",
+  "type": "commonjs",
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "forksync": "./bin/forksync.js"
+  },
+  "files": [
+    "bin",
+    "scripts/runtime.js"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "check": "node --check bin/forksync.js && node --check scripts/runtime.js && node --check dist/action.js && node --check scripts/release/package-binary.js",
+    "prepublishOnly": "npm run check"
+  }
+}

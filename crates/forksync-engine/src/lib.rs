@@ -1,8 +1,8 @@
 use forksync_agent::{AgentFactory, AgentRepairOutcome, AgentRepairRequest, RepairTrigger};
 use forksync_config::{
     AgentProvider, ConfigIoError, DEFAULT_CONFIG_PATH, DEFAULT_STATE_FILE, DEFAULT_WORKFLOW_PATH,
-    NamedCommand, RepoConfig, RunnerPreset, TriggerSource, ValidationConfig, ValidationMode,
-    load_from_path, write_to_path,
+    NamedCommand, RepoConfig, RunnerPreset, SourceConfig, TriggerSource, ValidationConfig,
+    ValidationMode, load_from_path, write_to_path,
 };
 use forksync_git::{
     GitBackend, GitError, LeasedRefUpdate, PatchDerivationRequest, RemoteSpec, ReplayRequest,
@@ -13,10 +13,14 @@ use forksync_github::{
 };
 use forksync_state::{PersistedState, RecordedOutcome, RunRecord, StateError, StateStore};
 use fs4::fs_std::FileExt;
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
+use std::process::{Child, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use thiserror::Error;
 use tracing::{info, instrument, warn};
@@ -35,10 +39,13 @@ pub struct InitRequest {
     pub upstream_remote: Option<String>,
     pub upstream_repo: Option<String>,
     pub upstream_branch: Option<String>,
+    pub output_branch: Option<String>,
     pub build_command: Option<String>,
     pub test_command: Option<String>,
     pub auto_push: bool,
     pub agent_provider: AgentProvider,
+    pub publish_to_registry: bool,
+    pub sources: Vec<SourceConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +61,8 @@ pub struct InitReport {
     pub bootstrap_commit_sha: String,
     pub pushed_branches: Vec<String>,
     pub manual_push_branches: Vec<String>,
+    pub bootstrap_pr_branch: Option<String>,
+    pub bootstrap_pr_url: Option<String>,
     pub notes: Vec<String>,
 }
 
@@ -148,6 +157,14 @@ enum BranchUpdateOutcome {
     SkippedCheckedOut,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InitPushResult {
+    pushed_branches: Vec<String>,
+    manual_push_branches: Vec<String>,
+    bootstrap_pr_branch: Option<String>,
+    bootstrap_pr_url: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct ValidationStep {
     name: String,
@@ -163,6 +180,11 @@ struct ValidationFailure {
 enum ValidationFailureOrError {
     Failure(ValidationFailure),
     Engine(EngineError),
+}
+
+enum ValidationCommandOutcome {
+    Completed(Output),
+    TimedOut,
 }
 
 struct RepoSyncLock {
@@ -299,15 +321,21 @@ where
         let current_head = self.git.head_sha(&request.repo_path)?;
         let current_ref = self.git.current_ref(&request.repo_path)?;
         let worktree_clean = self.git.worktree_clean(&request.repo_path)?;
-        let output_branch = if self.git.remote_exists(&request.repo_path, "origin")? {
-            self.git
-                .default_branch_for_remote(&request.repo_path, "origin")
-                .unwrap_or_else(|_| upstream_branch.clone())
-        } else if current_ref == "HEAD" || current_ref.len() == 40 {
-            upstream_branch.clone()
-        } else {
-            current_ref.clone()
-        };
+        let output_branch = request.output_branch.clone().unwrap_or_else(|| {
+            if self
+                .git
+                .remote_exists(&request.repo_path, "origin")
+                .unwrap_or(false)
+            {
+                self.git
+                    .default_branch_for_remote(&request.repo_path, "origin")
+                    .unwrap_or_else(|_| upstream_branch.clone())
+            } else if current_ref == "HEAD" || current_ref.len() == 40 {
+                upstream_branch.clone()
+            } else {
+                current_ref.clone()
+            }
+        });
 
         let mut config = RepoConfig::for_init(upstream_repo.clone(), upstream_branch.clone());
         config.upstream.remote_name = upstream_remote.clone();
@@ -315,6 +343,8 @@ where
         config.workflow.runner = request.runner;
         config.agent.provider = request.agent_provider;
         config.agent.enabled = request.agent_provider != AgentProvider::Disabled;
+        config.sources = request.sources.clone();
+        config.registry.published = request.publish_to_registry;
         apply_init_validation_defaults(&mut config, request)?;
 
         if output_branch != "main" {
@@ -434,33 +464,39 @@ where
         }
 
         let managed_branches = init_managed_branches(&config, request.create_branches);
-        let (pushed_branches, manual_push_branches) = if request.auto_push {
-            let (pushed_branches, failed_push_branches) = self.push_init_branches(
+        let push_result = if request.auto_push {
+            self.push_init_branches(
                 &request.repo_path,
                 &config,
                 &bootstrap_commit_sha,
                 request.create_branches,
                 &mut notes,
-            )?;
-            if pushed_branches.is_empty() {
-                notes.push(
-                    "Did not push bootstrap refs automatically. Push the managed branches manually if you want the remote fork bootstrapped now."
-                        .to_string(),
-                );
-            } else {
-                notes.push(format!(
-                    "Pushed bootstrap refs to origin: {}.",
-                    pushed_branches.join(", ")
-                ));
-            }
-            (pushed_branches, failed_push_branches)
+            )?
         } else {
             notes.push(
                 "Skipped automatic bootstrap push. ForkSync left the managed branch publication step for you to run manually."
                     .to_string(),
             );
-            (Vec::new(), managed_branches)
+            InitPushResult {
+                pushed_branches: Vec::new(),
+                manual_push_branches: managed_branches,
+                bootstrap_pr_branch: None,
+                bootstrap_pr_url: None,
+            }
         };
+        if request.auto_push {
+            if push_result.pushed_branches.is_empty() && push_result.bootstrap_pr_branch.is_none() {
+                notes.push(
+                    "Did not push bootstrap refs automatically. Push the managed branches manually if you want the remote fork bootstrapped now."
+                        .to_string(),
+                );
+            } else if !push_result.pushed_branches.is_empty() {
+                notes.push(format!(
+                    "Pushed bootstrap refs to origin: {}.",
+                    push_result.pushed_branches.join(", ")
+                ));
+            }
+        }
 
         if current_ref == output_branch {
             if worktree_clean {
@@ -491,8 +527,10 @@ where
             live_branch: config.branches.live,
             output_branch,
             bootstrap_commit_sha,
-            pushed_branches,
-            manual_push_branches,
+            pushed_branches: push_result.pushed_branches,
+            manual_push_branches: push_result.manual_push_branches,
+            bootstrap_pr_branch: push_result.bootstrap_pr_branch,
+            bootstrap_pr_url: push_result.bootstrap_pr_url,
             notes,
         })
     }
@@ -570,10 +608,34 @@ where
             base_ref: author_base,
             ignored_paths: ignored_patch_paths,
         })?;
+        let ignored_patch_paths = vec![
+            PathBuf::from(DEFAULT_CONFIG_PATH),
+            PathBuf::from(DEFAULT_WORKFLOW_PATH),
+        ];
+        let source_commits = derive_source_patch_commits(
+            &self.git,
+            &request.repo_path,
+            &request.config,
+            &upstream_sha,
+            &ignored_patch_paths,
+        )?;
+        let imported_source_count = source_commits.len();
+        let local_author_count = author_commits.len();
+        let mut seen_commits = BTreeSet::new();
+        let mut combined_commits = Vec::new();
+        for commit in source_commits
+            .into_iter()
+            .chain(author_commits.iter().cloned())
+        {
+            if seen_commits.insert(commit.sha.clone()) {
+                combined_commits.push(commit);
+            }
+        }
 
         if !request.force
             && state.last_processed_upstream_sha.as_deref() == Some(upstream_sha.as_str())
             && author_commits.is_empty()
+            && request.config.sources.is_empty()
         {
             info!(upstream_sha = %upstream_sha, "sync exited early with no changes");
             return Ok(SyncReport {
@@ -612,7 +674,7 @@ where
 
         let mut used_agent = false;
         let mut sync_notes = Vec::new();
-        let mut remaining_commits = author_commits.clone();
+        let mut remaining_commits = combined_commits.clone();
         let mut applied_commit_count = 0usize;
         let candidate_head = loop {
             let replay = self.git.replay_patch_stack(&ReplayRequest {
@@ -802,6 +864,29 @@ where
         }
 
         if !request.dry_run && origin_exists {
+            if request.config.sync.backup_before_update
+                && request.config.sync.update_output_branch
+                && let Some(previous_output_sha) = &observed_remote_output_sha
+            {
+                let backup_branch = format!(
+                    "forksync/recovery/{}",
+                    request.config.branches.output.replace('/', "-")
+                );
+                let backup_refspec = format!("{previous_output_sha}:refs/heads/{backup_branch}");
+                match self
+                    .git
+                    .push_refspec(&request.repo_path, "origin", &backup_refspec)
+                {
+                    Ok(()) => sync_notes.push(format!(
+                        "Recorded the previous output tip on {} before publication.",
+                        backup_branch
+                    )),
+                    Err(error) => sync_notes.push(format!(
+                        "Backup publication to {} failed before updating {}: {}",
+                        backup_branch, request.config.branches.output, error
+                    )),
+                }
+            }
             let mut remote_updates = vec![LeasedRefUpdate {
                 remote_ref: format!("refs/heads/{}", request.config.branches.live),
                 expected_old_sha: observed_remote_live_sha,
@@ -883,6 +968,17 @@ where
             upstream_sha: Some(upstream_sha),
             patch_commits_applied: applied_commit_count,
             notes: {
+                if imported_source_count > 0 {
+                    sync_notes.push(format!(
+                        "Applied {} imported source commit(s) from {} configured source(s) before local commits.",
+                        imported_source_count,
+                        request.config.sources.iter().filter(|source| source.enabled).count()
+                    ));
+                }
+                sync_notes.push(format!(
+                    "Applied {} local user commit(s) from {}.",
+                    local_author_count, request.config.branches.output
+                ));
                 sync_notes.push(format!("Updated {}.", request.config.branches.live));
                 if origin_exists {
                     sync_notes.push(
@@ -940,6 +1036,7 @@ where
         self.state.save(state)?;
         self.report_failure_surface(
             config,
+            repo_path,
             state,
             SyncOutcome::FailedAgent,
             Some(upstream_sha.as_str()),
@@ -987,6 +1084,7 @@ where
         self.state.save(state)?;
         self.report_failure_surface(
             config,
+            repo_path,
             state,
             SyncOutcome::FailedValidation,
             Some(upstream_sha.as_str()),
@@ -1011,13 +1109,27 @@ where
         let steps = validation_steps(validation).map_err(ValidationFailureOrError::Engine)?;
 
         for step in steps {
-            let output = shell_command(&step.command, &working_directory).map_err(|source| {
+            let output = run_shell_command_with_timeout(
+                &step.command,
+                &working_directory,
+                validation.timeout_minutes,
+            )
+            .map_err(|source| {
                 ValidationFailureOrError::Engine(EngineError::ValidationCommandIo {
                     command: step.command.clone(),
                     working_directory: working_directory.clone(),
                     source,
                 })
             })?;
+
+            let ValidationCommandOutcome::Completed(output) = output else {
+                return Err(ValidationFailureOrError::Failure(ValidationFailure {
+                    notes: vec![format!(
+                        "Validation step `{}` exceeded the {} minute timeout.",
+                        step.name, validation.timeout_minutes
+                    )],
+                }));
+            };
 
             if !output.status.success() {
                 if !step.required {
@@ -1044,6 +1156,7 @@ where
     fn report_failure_surface(
         &self,
         config: &RepoConfig,
+        repo_path: &Path,
         state: &PersistedState,
         outcome: SyncOutcome,
         upstream_sha: Option<&str>,
@@ -1084,9 +1197,66 @@ where
             return;
         };
 
+        if let Err(error) = self.publish_failure_branch(repo_path, &payload) {
+            warn!(
+                error = %error,
+                branch = %payload.branch,
+                "best-effort failure branch publication failed"
+            );
+        }
+
         if let Err(error) = self.failure_reporter.upsert_failure_pr(&payload) {
             warn!(error = %error, outcome = ?outcome, "best-effort failure PR reporting failed");
         }
+    }
+
+    fn publish_failure_branch(
+        &self,
+        repo_path: &Path,
+        payload: &forksync_github::FailurePrPayload,
+    ) -> Result<(), EngineError> {
+        if !self.git.remote_exists(repo_path, "origin")? {
+            return Ok(());
+        }
+
+        let temp_root = TempDir::new().map_err(|source| EngineError::CreateTempDir { source })?;
+        let worktree_path = temp_root.path().join("conflicts");
+        self.git
+            .add_detached_worktree(repo_path, &worktree_path, &payload.base_branch)?;
+
+        let result = (|| {
+            let summary_path = worktree_path.join(".forksync/conflicts.md");
+            write_plain_file(&summary_path, &payload.summary.body)?;
+            if self
+                .git
+                .paths_clean(&worktree_path, &[PathBuf::from(".forksync/conflicts.md")])?
+            {
+                self.git.head_sha(&worktree_path).map_err(EngineError::from)
+            } else {
+                self.git
+                    .commit_paths(
+                        &worktree_path,
+                        &[PathBuf::from(".forksync/conflicts.md")],
+                        &payload.summary.title,
+                    )
+                    .map_err(EngineError::from)
+            }
+        })();
+
+        let cleanup = self.git.remove_worktree(repo_path, &worktree_path);
+        let commit_sha = match (result, cleanup) {
+            (Ok(commit_sha), Ok(())) => commit_sha,
+            (Err(error), Ok(())) => return Err(error),
+            (Ok(_), Err(error)) => return Err(EngineError::from(error)),
+            (Err(error), Err(_)) => return Err(error),
+        };
+
+        self.git.push_refspec(
+            repo_path,
+            "origin",
+            &format!("{commit_sha}:refs/heads/{}", payload.branch),
+        )?;
+        Ok(())
     }
 
     fn resolve_upstream_remote(&self, request: &InitRequest) -> Result<String, EngineError> {
@@ -1122,6 +1292,8 @@ where
             bootstrap_commit_sha,
             pushed_branches: Vec::new(),
             manual_push_branches: Vec::new(),
+            bootstrap_pr_branch: None,
+            bootstrap_pr_url: None,
             notes: vec![
                 "ForkSync is already initialized in this repo. Nothing changed.".to_string(),
                 "Re-run `forksync init --force` if you need to regenerate managed files or repair the bootstrap state.".to_string(),
@@ -1205,31 +1377,75 @@ where
         bootstrap_commit_sha: &str,
         create_branches: bool,
         notes: &mut Vec<String>,
-    ) -> Result<(Vec<String>, Vec<String>), EngineError> {
+    ) -> Result<InitPushResult, EngineError> {
         if !self.git.remote_exists(repo_path, "origin")? {
             notes.push("No origin remote found, so ForkSync skipped automatic push.".to_string());
-            return Ok((Vec::new(), Vec::new()));
+            return Ok(InitPushResult {
+                pushed_branches: Vec::new(),
+                manual_push_branches: Vec::new(),
+                bootstrap_pr_branch: None,
+                bootstrap_pr_url: None,
+            });
         }
 
         let branches = init_managed_branches(config, create_branches);
 
         let mut pushed = Vec::new();
         let mut failed = Vec::new();
+        let mut bootstrap_pr_branch = None;
         for branch in branches {
             let refspec = format!("{bootstrap_commit_sha}:refs/heads/{branch}");
             match self.git.push_refspec(repo_path, "origin", &refspec) {
                 Ok(()) => pushed.push(branch),
                 Err(err) => {
-                    failed.push(branch.clone());
-                    notes.push(format!(
-                        "Automatic push for branch {} failed: {}",
-                        branch, err
-                    ));
+                    if branch == config.branches.output && is_protected_branch_rejection(&err) {
+                        let fallback_branch = format!(
+                            "forksync/bootstrap/{}",
+                            config.branches.output.replace('/', "-")
+                        );
+                        let fallback_refspec =
+                            format!("{bootstrap_commit_sha}:refs/heads/{fallback_branch}");
+                        match self
+                            .git
+                            .push_refspec(repo_path, "origin", &fallback_refspec)
+                        {
+                            Ok(()) => {
+                                bootstrap_pr_branch = Some(fallback_branch.clone());
+                                pushed.push(fallback_branch.clone());
+                                notes.push(format!(
+                                    "Direct publication to {} was rejected by branch protection, so ForkSync published {} for a bootstrap PR instead.",
+                                    config.branches.output, fallback_branch
+                                ));
+                            }
+                            Err(fallback_error) => {
+                                failed.push(branch.clone());
+                                notes.push(format!(
+                                    "Automatic push for branch {} failed: {}",
+                                    branch, err
+                                ));
+                                notes.push(format!(
+                                    "Protected-branch fallback via bootstrap branch {} also failed: {}",
+                                    fallback_branch, fallback_error
+                                ));
+                            }
+                        }
+                    } else {
+                        failed.push(branch.clone());
+                        notes.push(format!(
+                            "Automatic push for branch {} failed: {}",
+                            branch, err
+                        ));
+                    }
                 }
             }
         }
 
-        Ok((pushed, failed))
+        Ok(InitPushResult {
+            pushed_branches: pushed,
+            manual_push_branches: failed,
+            bootstrap_pr_branch,
+            bootstrap_pr_url: None,
+        })
     }
 }
 
@@ -1243,6 +1459,73 @@ fn init_managed_branches(config: &RepoConfig, create_branches: bool) -> Vec<Stri
         branches.push(config.branches.output.clone());
     }
     branches
+}
+
+fn derive_source_patch_commits<G: GitBackend>(
+    git: &G,
+    repo_path: &Path,
+    config: &RepoConfig,
+    upstream_sha: &str,
+    ignored_paths: &[PathBuf],
+) -> Result<Vec<forksync_git::PatchCommit>, EngineError> {
+    let mut commits = Vec::new();
+    let mut ordered_sources = config
+        .sources
+        .iter()
+        .filter(|source| source.enabled)
+        .cloned()
+        .collect::<Vec<_>>();
+    ordered_sources.sort_by(|left, right| {
+        (&left.repo, &left.branch, &left.name).cmp(&(&right.repo, &right.branch, &right.name))
+    });
+
+    for (index, source) in ordered_sources.into_iter().enumerate() {
+        let local_ref = format!("refs/forksync/sources/{}", index + 1);
+        git.fetch_branch_to_local_ref(
+            repo_path,
+            &normalize_source_repo(&source.repo),
+            &source.branch,
+            &local_ref,
+        )?;
+        let merge_base = git.merge_base(repo_path, &local_ref, upstream_sha)?;
+        let mut source_commits = git.derive_patch_commits(&PatchDerivationRequest {
+            repo_path: repo_path.to_path_buf(),
+            patch_branch: local_ref,
+            base_ref: merge_base,
+            ignored_paths: ignored_paths.to_vec(),
+        })?;
+        for commit in &mut source_commits {
+            commit.source_name = Some(source.name.clone());
+        }
+        commits.extend(source_commits);
+    }
+
+    Ok(commits)
+}
+
+fn normalize_source_repo(repo: &str) -> String {
+    if repo.contains("://")
+        || repo.starts_with("git@")
+        || repo.starts_with('/')
+        || repo.starts_with('.')
+    {
+        return repo.to_string();
+    }
+
+    format!("https://github.com/{repo}.git")
+}
+
+fn is_protected_branch_rejection(error: &GitError) -> bool {
+    match error {
+        GitError::CommandFailed { stderr, .. } | GitError::LeaseRejected { stderr, .. } => {
+            let stderr = stderr.to_ascii_lowercase();
+            stderr.contains("protected branch")
+                || stderr.contains("protected branch hook declined")
+                || stderr.contains("gh006")
+                || stderr.contains("cannot force-push")
+        }
+        _ => false,
+    }
 }
 
 fn resolve_validation_workdir(repo_path: &Path, validation: &ValidationConfig) -> PathBuf {
@@ -1349,7 +1632,7 @@ fn required_validation_step(
     })
 }
 
-fn shell_command(command: &str, cwd: &Path) -> Result<std::process::Output, std::io::Error> {
+fn spawn_shell_command(command: &str, cwd: &Path) -> Result<Child, std::io::Error> {
     let mut process = if cfg!(windows) {
         let mut cmd = ProcessCommand::new("cmd");
         cmd.args(["/C", command]);
@@ -1360,7 +1643,37 @@ fn shell_command(command: &str, cwd: &Path) -> Result<std::process::Output, std:
         cmd
     };
 
-    process.current_dir(cwd).output()
+    process
+        .current_dir(cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+}
+
+fn run_shell_command_with_timeout(
+    command: &str,
+    cwd: &Path,
+    timeout_minutes: u32,
+) -> Result<ValidationCommandOutcome, std::io::Error> {
+    let mut child = spawn_shell_command(command, cwd)?;
+    let timeout = Duration::from_secs(u64::from(timeout_minutes.max(1)) * 60);
+    let start = Instant::now();
+
+    loop {
+        if let Some(_status) = child.try_wait()? {
+            return child
+                .wait_with_output()
+                .map(ValidationCommandOutcome::Completed);
+        }
+
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(ValidationCommandOutcome::TimedOut);
+        }
+
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 fn is_failure_record(outcome: RecordedOutcome) -> bool {
@@ -1569,10 +1882,13 @@ mod tests {
             upstream_remote: None,
             upstream_repo: None,
             upstream_branch: None,
+            output_branch: None,
             build_command: None,
             test_command: None,
             auto_push: true,
             agent_provider: AgentProvider::OpenCode,
+            publish_to_registry: false,
+            sources: Vec::new(),
         }
     }
 }

@@ -51,12 +51,14 @@ pub struct RepoConfig {
     pub product_mode: ProductModeConfig,
     pub upstream: UpstreamConfig,
     pub branches: BranchConfig,
+    pub sources: Vec<SourceConfig>,
     pub sync: SyncConfig,
     pub validation: ValidationConfig,
     pub agent: AgentConfig,
     pub notifications: NotificationConfig,
     pub auth: AuthConfig,
     pub workflow: WorkflowConfig,
+    pub registry: RegistryConfig,
     pub storage: StorageConfig,
     pub safety: SafetyConfig,
     pub future: FutureConfig,
@@ -70,12 +72,14 @@ impl Default for RepoConfig {
             product_mode: ProductModeConfig::default(),
             upstream: UpstreamConfig::default(),
             branches: BranchConfig::default(),
+            sources: Vec::new(),
             sync: SyncConfig::default(),
             validation: ValidationConfig::default(),
             agent: AgentConfig::default(),
             notifications: NotificationConfig::default(),
             auth: AuthConfig::default(),
             workflow: WorkflowConfig::default(),
+            registry: RegistryConfig::default(),
             storage: StorageConfig::default(),
             safety: SafetyConfig::default(),
             future: FutureConfig::default(),
@@ -452,9 +456,27 @@ impl Default for WorkflowConfig {
             runner: RunnerPreset::UbuntuLatest,
             timeout_minutes: 45,
             permissions: WorkflowPermissionConfig::default(),
-            action_ref: "samfinton/forksync@main".to_string(),
+            action_ref: "samfinton/forksync@v1".to_string(),
             setup_wizard_enabled: true,
             setup_workflow_dispatch_inputs_enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct RegistryConfig {
+    pub endpoint: String,
+    pub published: bool,
+    pub source_name: Option<String>,
+}
+
+impl Default for RegistryConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: "https://registry.forksync.dev".to_string(),
+            published: false,
+            source_name: None,
         }
     }
 }
@@ -558,6 +580,14 @@ pub struct PatchIdentityConfig {
 pub struct RegistrySourceConfig {
     pub name: String,
     pub url: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceConfig {
+    pub name: String,
+    pub repo: String,
+    pub branch: String,
     pub enabled: bool,
 }
 
@@ -741,7 +771,9 @@ mod tests {
         assert_eq!(config.agent.credential_mode, AgentCredentialMode::None);
         assert_eq!(config.agent.prompt_profile, PromptProfile::Reckless);
         assert_eq!(config.auth.upstream_auth.mode, UpstreamAuthMode::Anonymous);
-        assert_eq!(config.workflow.action_ref, "samfinton/forksync@main");
+        assert_eq!(config.workflow.action_ref, "samfinton/forksync@v1");
+        assert!(config.sources.is_empty());
+        assert!(!config.registry.published);
         assert!(config.safety.allow_force_push_output_branch);
     }
 

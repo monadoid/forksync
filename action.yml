@@ -35,9 +35,9 @@ inputs:
     required: false
     default: latest
   allow-build-fallback:
-    description: Allow building ForkSync from source if no prebuilt binary is available.
+    description: Allow building ForkSync from source if no prebuilt binary is available. Dev-only escape hatch.
     required: false
-    default: "true"
+    default: "false"
   action-repository:
     description: Repository that publishes ForkSync release binaries.
     required: false

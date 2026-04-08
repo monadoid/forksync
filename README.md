@@ -1,136 +1,164 @@
 # ForkSync
 
-ForkSync is a Git-first tool for keeping a fork current with upstream while preserving a small layer of custom commits.
+ForkSync keeps a fork current with upstream while preserving a small layer of custom commits.
 
-The intended user flow is simple:
+The intended user flow is:
 
 1. Fork a repo on GitHub.
 2. Clone your fork locally.
 3. Run `forksync init`.
-4. Keep working on `main`.
-5. Let ForkSync replay your `main` commits onto new upstream changes automatically.
-
-
-## How It Works
-
-ForkSync tracks three branches:
-
-- `main`: your normal authoring branch and default output branch
-- `forksync/live`: the machine-generated synced result
-- `forksync/patches`: an internal snapshot/debug branch
-
-At sync time, ForkSync:
-
-1. Fetches upstream and your fork.
-2. Finds the commits you made on `main` since the last generated base.
-3. Builds a fresh candidate branch from the latest upstream `HEAD`.
-4. Reapplies ForkSync-managed files.
-5. Replays your commit stack in order.
-6. Uses the agent when there are conflicts that must be resolved.
-7. Publishes `forksync/live` and, by default, force-updates `main`.
-
-The main design rule is:
-
-- upstream is the base truth
-- your fork changes are a patch layer
-- agent repair is the exception path, not the primary sync path
+4. Keep working on your output branch, which defaults to `main`.
+5. Let ForkSync replay your fork changes onto new upstream updates automatically.
 
 ## Quick Start
 
-Inside a forked repo:
+Public install target:
 
 ```bash
-forksync init
+pnpx forksync init
 ```
 
-That will:
+Current repo-local dogfood flow:
+
+```bash
+cargo run --bin forksync -- init
+```
+
+`forksync init` will:
 
 - detect the upstream remote when possible
 - generate `.forksync.yml`
 - generate `.github/workflows/forksync.yml`
-- create the bootstrap commit in a detached temporary worktree
-- create/update the management branches
-- try to push the managed refs for you
+- create/update `forksync/live` and `forksync/patches`
+- try to publish the managed refs for you
+- offer a minimal interactive setup for:
+  - direct publication to the output branch when it looks safe
+  - `OpenCode` or `No AI`
+  - optional public registry opt-in for GitHub-hosted forks
 
-After that, keep working on `main`.
+After that, keep working on your output branch and let the generated GitHub Action run ForkSync.
 
-To test a local sync run manually:
+## How It Works
+
+ForkSync tracks three primary branches:
+
+- `main` or your configured output branch: your normal authoring branch
+- `forksync/live`: the generated synced result
+- `forksync/patches`: an internal snapshot/debug branch
+
+At sync time, ForkSync:
+
+1. Fetches upstream and origin.
+2. Builds a fresh candidate branch from the latest upstream `HEAD`.
+3. Rewrites ForkSync-managed files from the current config.
+4. Replays imported public source commits, if configured.
+5. Replays your local authored commits last.
+6. Uses the agent only when replay conflicts require repair.
+7. Publishes `forksync/live` and, by default, force-updates the output branch with explicit `--force-with-lease` protection.
+
+The design rule is simple:
+
+- upstream is the base truth
+- your fork changes are a patch layer
+- imported public sources are replayed before your local commits
+- agent repair is the exception path, not the primary path
+
+## Public Sources
+
+ForkSync now has a public-source model for sharing reusable fork layers.
+
+- A source is a Git repo plus tracked branch.
+- Configured sources live in `sources[]` in `.forksync.yml`.
+- `forksync sync` fetches each enabled source, derives its patch layer from the merge-base with upstream, and replays those commits before your own local commits.
+- Source ordering is deterministic and internal. It is not a user-facing knob.
+
+You can configure sources during init:
 
 ```bash
-forksync sync --trigger local-debug
+forksync init --source owner/repo#main
 ```
 
-## Safe Local Demo Commands
-
-If you want to see the real `forksync init` flow without touching a real fork:
+Or later:
 
 ```bash
-forksync dev init --prepare-only
+forksync registry add owner/repo#main
+forksync registry list
+forksync registry remove owner/repo#main
 ```
 
-That creates a disposable sandbox repo and prints the exact command to run next.
+The repository also contains a Cloudflare Worker + D1 scaffold under [`registry/`](/Users/samfinton/Documents/Programming/forksync/registry) for a public browse/search/select experience.
 
-If you want ForkSync to create the sandbox and immediately launch the real interactive `init` flow:
+## GitHub Action
 
-```bash
-forksync dev init
+Generated workflows use:
+
+```yaml
+uses: samfinton/forksync@v1
 ```
 
-If you want workflow smoke testing through `act`:
+The action is a JavaScript launcher that prefers prebuilt release binaries and only falls back to source builds as a dev escape hatch.
 
-```bash
-forksync dev act
-```
+Important runtime behavior:
 
-## Configuration Notes
+- OpenCode install is automatic only when OpenCode is selected.
+- normal CLI output is intentionally quiet
+- leased pushes are the correctness guard for remote ref publication
+- GitHub workflow `concurrency` remains the scheduler guard for hosted runs
+
+## Defaults
 
 Important defaults:
 
-- output branch: `main`
+- output branch: detected default branch, usually `main`
 - live branch: `forksync/live`
-- internal patch/debug branch: `forksync/patches`
+- patch/debug branch: `forksync/patches`
+- default action ref: `samfinton/forksync@v1`
 - validation mode: `none` unless you provide commands
-- default agent provider: `OpenCode`
-- default model: `opencode/gpt-5-nano`
+- public agent choices: `OpenCode` and `No AI`
+- default OpenCode model: `opencode/gpt-5-nano`
 
-Validation commands can already be set during `init` with flags such as:
+Validation commands can already be set during init:
 
 ```bash
 forksync init --build-command "cargo build --workspace" --test-command "cargo test --workspace"
 ```
 
+## Local Demo
+
+Safe local demo commands:
+
+```bash
+forksync dev init --prepare-only
+forksync dev init
+forksync dev act
+```
+
+Use `forksync dev act` to smoke-test the real action path locally.
+
 ## Observability
 
 ForkSync uses structured `tracing` internally.
 
-By default, normal CLI output is intentionally quiet.
-
 Use:
 
 - `--verbose` for human-readable logs
-- `--json-logs` for structured log output
+- `--json-logs` for structured logs
 - `OTEL_EXPORTER_OTLP_ENDPOINT=...` to export telemetry
 
 ## TODOs
 
-- [ ] Publish ForkSync as a versioned GitHub Action release with immutable tags, a moving major tag, and upgrade guidance.
-- [ ] Prove GitHub-hosted runner packaging end to end with prebuilt binaries instead of source-build fallback.
-- [ ] Decide whether the GitHub Action should bundle the OpenCode runtime or continue installing it dynamically.
-- [ ] Implement real GitHub failure PR reuse/upsert on the standing conflict branch.
-- [ ] Add a protected-branch fallback for `forksync init`, such as opening a PR instead of requiring a direct push.
-- [ ] Add validation timeout handling.
-- [ ] Add an interactive validation wizard for collecting build and test commands.
-- [ ] Make replay of commits that mix managed files and normal files path-aware.
-- [ ] Expand GitHub-side auth-failure and infra-failure coverage.
-- [ ] Add example config, troubleshooting, and end-user install/debug docs.
-- [ ] Publish easier install paths such as `pnpx`, Homebrew, and other non-Rust-first entrypoints.
-- [ ] Decide the long-term fallback plan if OpenCode free models or runtime assumptions change materially.
-- [ ] Either wire additional agent providers fully or narrow the exposed provider choices until they are real.
-- [ ] Add backup/recovery-anchor behavior and fuller live-only/output-branch safety coverage.
-- [ ] Add snapshot/golden coverage for generated config and failure summaries.
-- [ ] Add conflict-memory and more advanced auto-resolution behavior.
-- [ ] Decide the long-term hosted story, if any, for non-open-source orchestration features.
-- [ ] Decide whether future public fork sharing should look like a directory, registry, or patch-stacking model.
+- [ ] Publish the first real versioned GitHub Action release and move `@v1` onto an immutable semver release flow.
+- [ ] Publish the npm package and other non-Rust-first install paths for public users.
+- [ ] Finish the bootstrap protected-branch fallback by auto-opening the PR, not just publishing the fallback branch.
+- [ ] Finish standing conflict PR reuse end to end on GitHub-hosted runs.
+- [ ] Expand GitHub-side auth and infra failure coverage.
+- [ ] Add an interactive validation wizard instead of only flag-based validation setup.
+- [ ] Finish public registry publish/update/unpublish from the Rust CLI against the deployed Worker.
+- [ ] Deploy the Cloudflare registry and document its public URL and operating model.
+- [ ] Add example configs, troubleshooting docs, and end-user release/update guidance.
+- [ ] Decide the long-term fallback plan if OpenCode runtime or free-model assumptions change materially.
+- [ ] Decide whether future public sharing should stay registry-style or evolve toward richer patch stacking.
+- [ ] Add conflict-memory and stronger automatic repair behavior.
 
 ## Contributing
 
@@ -142,7 +170,7 @@ Contributor rules for this repository:
 - keep the CLI and workflow wrappers thin over reusable library APIs
 - add or update tests whenever behavior changes
 - prefer deterministic engine behavior over implicit magic
-- preserve the swappable agent abstraction even while OpenCode is the only fully wired provider
+- preserve the swappable agent abstraction even while OpenCode is the only fully wired public provider
 - update this README when the product shape or TODO list changes
 
 Definition of done for a feature:

@@ -1,0 +1,135 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Semver tag to publish, such as v1.2.3
+        required: true
+        type: string
+      publish_npm:
+        description: Publish the npm package after the GitHub release
+        required: false
+        default: true
+        type: boolean
+      publish_major_tag:
+        description: Move the floating v1 tag to the released commit
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            asset_name: forksync-x86_64-unknown-linux-gnu
+            binary_name: forksync
+          - runner: macos-latest
+            asset_name: forksync-aarch64-apple-darwin
+            binary_name: forksync
+          - runner: macos-13
+            asset_name: forksync-x86_64-apple-darwin
+            binary_name: forksync
+          - runner: windows-latest
+            asset_name: forksync-x86_64-pc-windows-msvc.exe
+            binary_name: forksync.exe
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        shell: bash
+        run: cargo build --release --locked --bin forksync
+
+      - name: Package release binary
+        shell: bash
+        run: |
+          node scripts/release/package-binary.js \
+            --input "target/release/${{ matrix.binary_name }}" \
+            --output-dir "release-assets/${{ matrix.asset_name }}" \
+            --asset-name "${{ matrix.asset_name }}"
+
+      - name: Upload packaged assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.asset_name }}
+          path: release-assets/${{ matrix.asset_name }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Download packaged assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          files: release-assets/**/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+      - name: Move floating v1 tag
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_major_tag }}
+        shell: bash
+        run: |
+          git config user.name "ForkSync Release Bot"
+          git config user.email "forksync-release-bot@users.noreply.github.com"
+          git tag -f v1 "${GITHUB_SHA}"
+          git push origin refs/tags/v1 --force
+
+      - name: Update npm package version
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_npm }}
+        shell: bash
+        run: |
+          PACKAGE_VERSION="${RELEASE_TAG#v}"
+          npm version --no-git-tag-version "$PACKAGE_VERSION"
+
+      - name: Publish npm package
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_npm }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
