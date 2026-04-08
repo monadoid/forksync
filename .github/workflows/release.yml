@@ -37,7 +37,7 @@ jobs:
           - runner: macos-latest
             asset_name: forksync-aarch64-apple-darwin
             binary_name: forksync
-          - runner: macos-13
+          - runner: macos-15-intel
             asset_name: forksync-x86_64-apple-darwin
             binary_name: forksync
           - runner: windows-latest
